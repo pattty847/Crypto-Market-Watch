@@ -6,4 +6,5 @@ This Python application is a real-time market aggregator that collects and proce
 (2 mins of trade activity)
 ![asdasdasd](https://user-images.githubusercontent.com/23511285/236011966-e0c60537-1781-42bc-bfba-83d770cd7de6.png)
 
+# InfluxDB UI
 ![image](https://user-images.githubusercontent.com/23511285/236641281-b2cdc2ef-08e0-41a3-928b-b4d7d8b35a2c.png)
