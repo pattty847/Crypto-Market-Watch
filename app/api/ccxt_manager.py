@@ -1,16 +1,12 @@
-import json
-import os
 import ccxt
 import ccxt.pro as ccxtpro
 import logging
 import asyncio
 import pandas as pd
-from datetime import datetime, timedelta
 from api.influx import InfluxDB
-from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client import Point, WritePrecision
 from api.ta import TechnicalAnalysis
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from asyncio import Queue
 from api.market_aggregator import MarketAggregator
 
@@ -96,74 +92,61 @@ class CCXTManager:
         timeframe: str,
         since: str,
         limit: int,
-        return_dataframe=True,
-        max_retries=3,
-        resample_timeframe=None,
-    ) -> List[Tuple]:
-        tasks = [
-            self.fetch_candles(
-                exchange_id,
-                symbol,
-                timeframe,
-                since,
-                limit,
-                return_dataframe,
-                max_retries,
-                resample_timeframe,
-            )
-            for exchange_id in self.exchanges
-            for symbol in symbols
-        ]
-        dataframes = await asyncio.gather(*tasks)
-        return [df for df in dataframes if df is not None]
-
-    async def fetch_candles(
-        self,
-        exchange_id: str,
-        symbol: str,
-        timeframe: str,
-        since: str,
-        limit: int,
         return_dataframe: bool = True,
         max_retries: int = 3,
-        resample_timeframe: str = None,
-    ) -> Tuple[str, str, str, pd.DataFrame]:
-        exchange = self.exchanges[exchange_id]
-        available_timeframes = list(exchange.timeframes.keys())
+        resample_timeframe: Optional[str] = None
+    ) -> List[Tuple[str, str, str, pd.DataFrame]]:
+        results = []
+        for exchange_id in self.exchanges:
+            for symbol in symbols:
+                exchange = self.exchanges[exchange_id]
+                available_timeframes = list(exchange.timeframes.keys())
 
-        loaded_candles = self.load_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
-        
-        print(loaded_candles)
+                if resample_timeframe:
+                    timeframe = self.find_highest_resample_timeframe(resample_timeframe, available_timeframes)
 
-        if resample_timeframe:
-            timeframe = self.find_highest_resample_timeframe(resample_timeframe, available_timeframes)
-            
-        timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
-        timedelta = limit * timeframe_duration_in_seconds * 1000
-        now = exchange.milliseconds()
+                timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
+                timedelta = limit * timeframe_duration_in_seconds * 1000
+                now = exchange.milliseconds()
 
-        fetch_since = (
-            exchange.parse8601(since) if not len(loaded_candles["dates"]) else int(loaded_candles["dates"][-1] * 1000)
-        )
+                loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
+                fetch_since = (
+                    exchange.parse8601(since) if loaded_candles.empty else int(loaded_candles["dates"].iloc[-1].timestamp() * 1000)
+                )
 
-        new_candles = await self.fetch_new_candles(exchange, symbol, timeframe, fetch_since, limit, max_retries, now, timedelta)
+                try:
+                    new_candles = await self.fetch_new_candles(
+                        exchange,
+                        symbol,
+                        timeframe,
+                        fetch_since,
+                        limit,
+                        max_retries,
+                        now,
+                        timedelta
+                    )
+                except Exception as e:
+                    # Handle exception appropriately (e.g., log, retry, or propagate)
+                    raise e
 
-        loaded_candles = self.append_new_candles(loaded_candles, new_candles)
-        
-        if not loaded_candles['dates']:
-            return
+                loaded_candles = self.concat_new_candles(loaded_candles, new_candles)
 
-        self.save_candles_to_influxdb(exchange_id, symbol, timeframe, loaded_candles)
+                # Write the updated candles DataFrame to InfluxDB
+                self.write_candles_to_influxdb(exchange_id, symbol, timeframe, loaded_candles)
 
-        await exchange.close()
+                # Read the candles back from InfluxDB after writing
+                loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
 
-        df = pd.DataFrame(loaded_candles)
+                await exchange.close()
 
-        if resample_timeframe:
-            df = self.ta.resample_dataframe(df, timeframe, resample_timeframe)
-            timeframe = resample_timeframe
+                if resample_timeframe:
+                    loaded_candles = self.ta.resample_dataframe(loaded_candles, timeframe, resample_timeframe)
+                    timeframe = resample_timeframe
 
-        return exchange_id, symbol, timeframe, df if return_dataframe else loaded_candles
+                results.append((exchange_id, symbol, timeframe, loaded_candles))
+
+
+        return results
 
     async def fetch_new_candles(
         self,
@@ -220,18 +203,77 @@ class CCXTManager:
             return new_candle_batch
         return
 
-    def append_new_candles(self, loaded_candles: Dict, new_candles: List) -> Dict:
+    def concat_new_candles(self, loaded_candles: pd.DataFrame, new_candles: List) -> pd.DataFrame:
         if new_candles is None:
             return loaded_candles
-        for row in new_candles[1:]:
-            loaded_candles["dates"].append(row[0] / 1000)
-            loaded_candles["opens"].append(float(row[1]))
-            loaded_candles["highs"].append(float(row[2]))
-            loaded_candles["lows"].append(float(row[3]))
-            loaded_candles["closes"].append(float(row[4]))
-            loaded_candles["volumes"].append(float(row[5]))
+        
+        new_candles_df = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])
+        new_candles_df['dates'] = pd.to_datetime(new_candles_df['dates'], unit='ms', utc=True)
+        loaded_candles = pd.concat([loaded_candles, new_candles_df], ignore_index=True)
+
         return loaded_candles
 
+
+    def write_candles_to_influxdb(
+        self,
+        exchange,
+        symbol: str,
+        timeframe: str,
+        candles: pd.DataFrame,
+        bucket: str = "candles",
+    ) -> None:
+        if candles.empty:
+            print(f"Skipping write to InfluxDB for {exchange} {symbol} {timeframe} as the DataFrame is empty.")
+            return
+        
+        symbol = symbol.replace("/", "_")
+        points = []
+
+        for i in range(len(candles["dates"])):
+            point = Point("candle") \
+                .tag("exchange", exchange) \
+                .tag("symbol", symbol) \
+                .tag("timeframe", timeframe) \
+                .field("opens", candles["opens"][i]) \
+                .field("highs", candles["highs"][i]) \
+                .field("lows", candles["lows"][i]) \
+                .field("closes", candles["closes"][i]) \
+                .field("volumes", candles["volumes"][i]) \
+                .time(candles["dates"][i], WritePrecision.MS)
+
+            points.append(point)
+            
+        print(f"Writing to bucket: {bucket}, organization: 'pepe'")
+        
+        self.influx.write_api.write(bucket, 'pepe', points)
+
+    def read_candles_from_influxdb(
+        self, exchange: str, symbol: str, timeframe: str, bucket="candles") -> Dict:
+
+        symbol = symbol.replace("/", "_")
+        
+        query = f"""
+        from(bucket: "{bucket}")
+        |> range(start: -30d)
+        |> filter(fn: (r) => r["_measurement"] == "candle")
+        |> filter(fn: (r) => r["exchange"] == "{exchange}")
+        |> filter(fn: (r) => r["symbol"] == "{symbol}")
+        |> filter(fn: (r) => r["timeframe"] == "{timeframe}")
+        |> filter(fn: (r) => r["_field"] == "closes" or r["_field"] == "highs" or r["_field"] == "lows" or r["_field"] == "opens" or r["_field"] == "volumes")
+        |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+        |> drop(columns: ["_start", "_stop"])
+        """
+
+        print(f"Fetching from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
+        result = self.influx.query_api.query_data_frame(query, 'pepe')
+
+        if result.empty:
+            return pd.DataFrame(columns=["dates", "opens", "highs", "lows", "closes", "volumes"])
+        else:
+            result = result.rename(columns={"_time": "dates"})
+            result = result.reindex(columns=["dates", "opens", "highs", "lows", "closes", "volumes"])
+            return result
+        
     def convert_to_minutes(self, timeframe_str: str) -> int:
         units = timeframe_str[-1]
         value = int(timeframe_str[:-1])
@@ -258,77 +300,3 @@ class CCXTManager:
             raise ValueError(f"No suitable timeframe found for resampling to {resample_timeframe}")
 
         return [tf for tf in available_timeframes if self.convert_to_minutes(tf) == best_timeframe][0]
-
-    def save_candles_to_influxdb(
-        self,
-        exchange,
-        symbol: str,
-        timeframe: str,
-        candles: Dict,
-        bucket: str = "candles",
-    ) -> None:
-        if not candles:
-            print(f"Skipping write to InfluxDB for {exchange} {symbol} {timeframe} as the DataFrame is empty.")
-            return
-
-        influx_client = self.influx.get_influxdb_client()
-        write_api = influx_client.write_api(write_options=SYNCHRONOUS)
-
-        symbol = symbol.replace("/", "_")
-        points = []
-
-        for i in range(len(candles["dates"])):
-            point = Point("candle") \
-                .tag("exchange", exchange) \
-                .tag("symbol", symbol) \
-                .tag("timeframe", timeframe) \
-                .field("open", candles["opens"][i]) \
-                .field("high", candles["highs"][i]) \
-                .field("low", candles["lows"][i]) \
-                .field("close", candles["closes"][i]) \
-                .field("volume", candles["volumes"][i]) \
-                .time(int(candles["dates"][i] * 1e9), WritePrecision.NS)
-
-            points.append(point)
-            
-        print(f"Writing to bucket: {bucket}, organization: 'pepe'")
-        
-        write_api.write(bucket, 'pepe', points)
-        write_api.close()
-        influx_client.close()
-
-    def load_candles_from_influxdb(
-        self, exchange: str, symbol: str, timeframe: str, bucket="candles") -> Dict:
-        
-        influx_client = self.influx.get_influxdb_client()
-        query_api = influx_client.query_api()
-
-        symbol = symbol.replace("/", "_")
-        
-        query = f"""
-        from(bucket: "{bucket}")
-        |> range(start: -30d)
-        |> filter(fn: (r) => r["_measurement"] == "candle")
-        |> filter(fn: (r) => r["exchange"] == "{exchange}")
-        |> filter(fn: (r) => r["symbol"] == "{symbol}")
-        |> filter(fn: (r) => r["timeframe"] == "{timeframe}")
-        |> filter(fn: (r) => r["_field"] == "close" or r["_field"] == "high" or r["_field"] == "low" or r["_field"] == "open" or r["_field"] == "volume")
-        |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-        """
-
-        print(f"Fetching from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
-        result = query_api.query_data_frame(query, 'pepe')
-
-        influx_client.close()
-
-        if result.empty:
-            return {"dates": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
-        else:
-            return {
-                "dates": (result["_time"].astype('int64') / 1e9).tolist(),
-                "opens": result["open"].tolist(),
-                "highs": result["high"].tolist(),
-                "lows": result["low"].tolist(),
-                "closes": result["close"].tolist(),
-                "volumes": result["volume"].tolist()
-            }

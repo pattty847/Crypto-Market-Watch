@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime
+from influxdb_client import Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 from tabulate import tabulate
 from api.influx import InfluxDB
@@ -72,24 +73,22 @@ class MarketAggregator:
         
         
     def write_to_db(self, exchange, symbol, trade, order_cost, order_size_category, bucket):
-        point = {
-            "measurement": "trades",
-            "tags": {
-                "exchange": exchange,
-                "symbol": symbol,
-                "side": trade["side"],
-                "order_size_category": order_size_category
-            },
-            "fields": {
-                "price": float(trade["price"]),
-                "amount": float(trade["amount"]),
-                "cost": order_cost
-            },
-            "time": datetime.fromtimestamp(trade["timestamp"] / 1000).strftime('%Y-%m-%dT%H:%M:%SZ')
-        }
-    
+        
+        influx_client = self.influx.get_influxdb_client()
+        write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+        
+        point = Point("trades") \
+            .tag("exchange", exchange) \
+            .tag("symbol", symbol) \
+            .tag("side", trade["side"]) \
+            .tag("order_size_category", order_size_category) \
+            .field("price", float(trade["price"])) \
+            .field("amount", float(trade["amount"])) \
+            .field("cost", order_cost) \
+            .time(trade["timestamp"] / 1000, WritePrecision.NS)
+        
         try:
-            print(point)
-            self.influx.write_api.write(bucket=bucket, org='pepe', record=point)
+            print(point.to_line_protocol())
+            write_api.write(bucket=bucket, org='pepe', record=point)
         except Exception as e:
             print(e)
