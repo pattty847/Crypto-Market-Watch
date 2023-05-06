@@ -1,5 +1,4 @@
 from collections import defaultdict
-from api.services import get_influxdb_client
 from datetime import datetime
 from influxdb_client.client.write_api import SYNCHRONOUS
 from tabulate import tabulate
@@ -7,11 +6,11 @@ from api.influx import InfluxDB
 
 class MarketAggregator:
     
-    def __init__(self, trades_bucket="trades"):
+    def __init__(self, influx):
         self.data = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
         self.order_size_categories = ['0-10k', '10k-100k', '100k-1m', '1m-10m', '10m-100m']
         
-        self.influx = InfluxDB(trades_bucket)
+        self.influx = influx
 
 
     def calculate_stats(self, exchange, symbol, trade, write_to_db=False):
@@ -46,7 +45,7 @@ class MarketAggregator:
 
 
     def report(self):
-        header = ['Exchange/Symbol', 'Volume', 'CVD', '0-10k', '0-10kΔ', '10k-100k', '10k-100kΔ', '100k-1m', '100k-1mΔ', '1m-10m', '1m-10mΔ', '10m-100m', '10m-100mΔ']
+        header = ['Exchange/Symbol', 'Volume', 'CVDΔ', '0-10k', '0-10kΔ', '10k-100k', '10k-100kΔ', '100k-1m', '100k-1mΔ', '1m-10m', '1m-10mΔ', '10m-100m', '10m-100mΔ']
 
         rows = []
         for (exchange, symbol), values in self.data.items():
@@ -72,7 +71,7 @@ class MarketAggregator:
         print(tabulate(rows, headers=header, tablefmt='grid'))
         
         
-    def write_to_db(self, exchange, symbol, trade, order_cost, order_size_category):
+    def write_to_db(self, exchange, symbol, trade, order_cost, order_size_category, bucket):
         point = {
             "measurement": "trades",
             "tags": {
@@ -91,6 +90,6 @@ class MarketAggregator:
     
         try:
             print(point)
-            self.influx.write_api.write(bucket=self.influx.bucket, org='pepe', record=point)
+            self.influx.write_api.write(bucket=bucket, org='pepe', record=point)
         except Exception as e:
             print(e)
