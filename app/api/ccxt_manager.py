@@ -1,4 +1,3 @@
-import datetime
 import json
 import os
 import ccxt
@@ -6,7 +5,7 @@ import ccxt.pro as ccxtpro
 import logging
 import asyncio
 import pandas as pd
-
+from datetime import datetime, timedelta
 from api.influx import InfluxDB
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -133,6 +132,8 @@ class CCXTManager:
         available_timeframes = list(exchange.timeframes.keys())
 
         loaded_candles = self.load_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
+        
+        print(loaded_candles)
 
         if resample_timeframe:
             timeframe = self.find_highest_resample_timeframe(resample_timeframe, available_timeframes)
@@ -148,8 +149,11 @@ class CCXTManager:
         new_candles = await self.fetch_new_candles(exchange, symbol, timeframe, fetch_since, limit, max_retries, now, timedelta)
 
         loaded_candles = self.append_new_candles(loaded_candles, new_candles)
+        
+        if not loaded_candles['dates']:
+            return
 
-        self.save_candles_to_influxdb(exchange, symbol, timeframe, loaded_candles)
+        self.save_candles_to_influxdb(exchange_id, symbol, timeframe, loaded_candles)
 
         await exchange.close()
 
@@ -173,12 +177,12 @@ class CCXTManager:
         timedelta: int,
     ) -> List[List]:
         new_candles = []
-        while True:
+        done_fetching = False
+        while not done_fetching:
             new_candle_batch = await self.retry_request(exchange, symbol, timeframe, fetch_since, limit, max_retries)
 
             if new_candle_batch is None:
-                await exchange.close()
-                return
+                break
 
             new_candles += new_candle_batch
 
@@ -188,10 +192,11 @@ class CCXTManager:
                 last_time = fetch_since + timedelta
 
             if last_time >= now:
-                break
+                done_fetching = True
+            else:
+                fetch_since = last_time
 
-            fetch_since = last_time
-
+        await exchange.close()
         return new_candles
 
     async def retry_request(
@@ -206,8 +211,11 @@ class CCXTManager:
         for _ in range(max_retries):
             try:
                 new_candle_batch = await exchange.fetch_ohlcv(symbol, timeframe, since=fetch_since, limit=limit)
-            except (ccxt.ExchangeNotAvailable, ccxt.ExchangeError, ccxt.RequestTimeout) as e:
+                print(len(new_candle_batch), "candles from", exchange.iso8601(new_candle_batch[0][0]), "to", exchange.iso8601(new_candle_batch[-1][0]))
+            except (ccxt.ExchangeNotAvailable, ccxt.ExchangeError, ccxt.RequestTimeout, ccxt.BadSymbol) as e:
                 print(f"Error fetching data from {exchange.id} for {symbol}: {e}")
+                if isinstance(e, ccxt.BadSymbol):
+                    break
                 continue
             return new_candle_batch
         return
@@ -262,6 +270,7 @@ class CCXTManager:
         if not candles:
             print(f"Skipping write to InfluxDB for {exchange} {symbol} {timeframe} as the DataFrame is empty.")
             return
+
         influx_client = self.influx.get_influxdb_client()
         write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 
@@ -281,35 +290,42 @@ class CCXTManager:
                 .time(int(candles["dates"][i] * 1e9), WritePrecision.NS)
 
             points.append(point)
-
+            
+        print(f"Writing to bucket: {bucket}, organization: 'pepe'")
+        
         write_api.write(bucket, 'pepe', points)
         write_api.close()
         influx_client.close()
 
     def load_candles_from_influxdb(
-        self, exchange: str, symbol: str, timeframe: str
-    ) -> Dict:
+        self, exchange: str, symbol: str, timeframe: str, bucket="candles") -> Dict:
+        
         influx_client = self.influx.get_influxdb_client()
         query_api = influx_client.query_api()
 
         symbol = symbol.replace("/", "_")
+        
         query = f"""
-        from(bucket: "candles")
-        |> range(start: 0)
-        |> filter(fn: (r) => r["exchange"] == "{exchange}" and r["symbol"] == "{symbol}" and r["timeframe"] == "{timeframe}")
+        from(bucket: "{bucket}")
+        |> range(start: -30d)
+        |> filter(fn: (r) => r["_measurement"] == "candle")
+        |> filter(fn: (r) => r["exchange"] == "{exchange}")
+        |> filter(fn: (r) => r["symbol"] == "{symbol}")
+        |> filter(fn: (r) => r["timeframe"] == "{timeframe}")
+        |> filter(fn: (r) => r["_field"] == "close" or r["_field"] == "high" or r["_field"] == "low" or r["_field"] == "open" or r["_field"] == "volume")
         |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-        |> drop(columns: ["_start", "_stop"])
-        |> sort(columns: ["_time"], desc: false)
         """
 
-        result = query_api.query_data_frame(query)
+        print(f"Fetching from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
+        result = query_api.query_data_frame(query, 'pepe')
+
         influx_client.close()
 
         if result.empty:
             return {"dates": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
         else:
             return {
-                "dates": (result["_time"] / 1e9).tolist(),
+                "dates": (result["_time"].astype('int64') / 1e9).tolist(),
                 "opens": result["open"].tolist(),
                 "highs": result["high"].tolist(),
                 "lows": result["low"].tolist(),

@@ -2,6 +2,7 @@ venv
 tests
 config.json
 dpg.ini
+config.json
 __pycache__
 api/__pycache__
 ui/__pycache__
