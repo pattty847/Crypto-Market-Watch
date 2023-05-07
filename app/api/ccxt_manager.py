@@ -3,13 +3,13 @@ import ccxt.pro as ccxtpro
 import logging
 import asyncio
 import pandas as pd
+
 from api.influx import InfluxDB
 from influxdb_client import Point, WritePrecision
 from api.ta import TechnicalAnalysis
 from typing import Dict, List, Optional, Tuple
 from asyncio import Queue
 from api.market_aggregator import MarketAggregator
-
 
 logging.basicConfig(level=logging.INFO)
 
@@ -92,61 +92,70 @@ class CCXTManager:
         timeframe: str,
         since: str,
         limit: int,
-        return_dataframe: bool = True,
         max_retries: int = 3,
         resample_timeframe: Optional[str] = None
     ) -> List[Tuple[str, str, str, pd.DataFrame]]:
-        results = []
+        fetch_tasks = []
         for exchange_id in self.exchanges:
             for symbol in symbols:
-                exchange = self.exchanges[exchange_id]
-                available_timeframes = list(exchange.timeframes.keys())
-
-                if resample_timeframe:
-                    timeframe = self.find_highest_resample_timeframe(resample_timeframe, available_timeframes)
-
-                timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
-                timedelta = limit * timeframe_duration_in_seconds * 1000
-                now = exchange.milliseconds()
-
-                loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
-                fetch_since = (
-                    exchange.parse8601(since) if loaded_candles.empty else int(loaded_candles["dates"].iloc[-1].timestamp() * 1000)
+                task = asyncio.create_task(
+                    self.fetch_candles_for_symbol(
+                        exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe)
                 )
+                fetch_tasks.append(task)
 
-                try:
-                    new_candles = await self.fetch_new_candles(
-                        exchange,
-                        symbol,
-                        timeframe,
-                        fetch_since,
-                        limit,
-                        max_retries,
-                        now,
-                        timedelta
-                    )
-                except Exception as e:
-                    # Handle exception appropriately (e.g., log, retry, or propagate)
-                    raise e
+        return await asyncio.gather(*fetch_tasks)
+        
+    async def fetch_candles_for_symbol(
+        self, exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe) -> Tuple[str, str, str, pd.DataFrame]:
+        
+        exchange = self.exchanges[exchange_id]
+        available_timeframes = list(exchange.timeframes.keys())
 
-                loaded_candles = self.concat_new_candles(loaded_candles, new_candles)
+        if resample_timeframe:
+            timeframe = self.find_highest_resample_timeframe(resample_timeframe, available_timeframes)
 
-                # Write the updated candles DataFrame to InfluxDB
-                self.write_candles_to_influxdb(exchange_id, symbol, timeframe, loaded_candles)
+        timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
+        timedelta = limit * timeframe_duration_in_seconds * 1000
+        now = exchange.milliseconds()
 
-                # Read the candles back from InfluxDB after writing
-                loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
+        loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
+        
+        fetch_since = (
+            exchange.parse8601(since) if loaded_candles.empty else int(loaded_candles["dates"].iloc[-1].timestamp() * 1000)
+        )
 
-                await exchange.close()
+        try:
+            new_candles = await self.fetch_new_candles(
+                exchange,
+                symbol,
+                timeframe,
+                fetch_since,
+                limit,
+                max_retries,
+                now,
+                timedelta
+            )
+        except Exception as e:
+            # Handle exception appropriately (e.g., log, retry, or propagate)
+            raise e
 
-                if resample_timeframe:
-                    loaded_candles = self.ta.resample_dataframe(loaded_candles, timeframe, resample_timeframe)
-                    timeframe = resample_timeframe
+        loaded_candles = self.concat_new_candles(loaded_candles, new_candles)
 
-                results.append((exchange_id, symbol, timeframe, loaded_candles))
+        # Write the updated candles DataFrame to InfluxDB
+        new_candles_ = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])
+        self.write_candles_to_influxdb(exchange_id, symbol, timeframe, new_candles_)
 
+        # Read the candles back from InfluxDB after writing
+        loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
 
-        return results
+        await exchange.close()
+
+        if resample_timeframe:
+            loaded_candles = self.ta.resample_dataframe(loaded_candles, timeframe, resample_timeframe)
+            timeframe = resample_timeframe
+
+        return (exchange_id, symbol, timeframe, loaded_candles)
 
     async def fetch_new_candles(
         self,
@@ -229,21 +238,21 @@ class CCXTManager:
         symbol = symbol.replace("/", "_")
         points = []
 
-        for i in range(len(candles["dates"])):
+        for record in candles.to_records():
             point = Point("candle") \
                 .tag("exchange", exchange) \
                 .tag("symbol", symbol) \
                 .tag("timeframe", timeframe) \
-                .field("opens", candles["opens"][i]) \
-                .field("highs", candles["highs"][i]) \
-                .field("lows", candles["lows"][i]) \
-                .field("closes", candles["closes"][i]) \
-                .field("volumes", candles["volumes"][i]) \
-                .time(candles["dates"][i], WritePrecision.MS)
+                .field("opens", record.opens) \
+                .field("highs", record.highs) \
+                .field("lows", record.lows) \
+                .field("closes", record.closes) \
+                .field("volumes", record.volumes) \
+                .time(record.dates, WritePrecision.MS)
 
             points.append(point)
             
-        print(f"Writing to bucket: {bucket}, organization: 'pepe'")
+        print(f"Writing {len(candles['dates'])} candles to bucket: {bucket}, organization: 'pepe'")
         
         self.influx.write_api.write(bucket, 'pepe', points)
 
