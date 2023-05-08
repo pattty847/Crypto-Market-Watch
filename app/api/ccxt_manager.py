@@ -1,3 +1,4 @@
+import threading
 import ccxt
 import ccxt.pro as ccxtpro
 import logging
@@ -24,13 +25,16 @@ class CCXTManager:
         self.agg = MarketAggregator(self.influx)
         self.ta = TechnicalAnalysis()
         self.trade_queue = Queue()
+        self.thread = threading.Thread()
+        self.loop = asyncio.new_event_loop()
+        self.pause_events = {}  
         
     def get_exchanges(self):
         supported_exchanges = {}
         for exchange_id in self.watched_exchanges:
             try:
                 exchange_class = getattr(ccxtpro, exchange_id)({'newUpdates': False})
-                if exchange_class.has['watchTrades']:
+                if exchange_class.has['watchTrades'] and exchange_class.has['fetchOHLCV']:
                     supported_exchanges[exchange_id] = exchange_class
             except Exception as e:
                 logging.error(f"Error creating exchange object for {exchange_id}: {e}")
@@ -48,12 +52,18 @@ class CCXTManager:
         tasks = [close_exchange(exchange_id) for exchange_id in self.exchanges.keys()]
         await asyncio.gather(*tasks)
 
-    async def watch_exchanges(self, symbols):
-        async def watch_exchange(exchange_id, symbols):
+    async def watch_trades(self, symbols):
+        async def watch_trades_(exchange_id, symbols):
             exchange = self.exchanges[exchange_id]
             try:
                 while True:
                     for symbol in symbols:
+                        if (exchange_id, symbol) not in self.pause_events:
+                            self.pause_events[(exchange_id, symbol)] = threading.Event()
+                            self.pause_events[(exchange_id, symbol)].set()
+                            
+                        self.pause_events[(exchange_id, symbol)].wait()
+                        
                         trades = await exchange.watch_trades(symbol)
                         await self.trade_queue.put((exchange_id, trades))
             except (Exception, KeyboardInterrupt) as e:
@@ -71,7 +81,7 @@ class CCXTManager:
                 self.handle_trades(exchange_id, trades, None)
                 self.trade_queue.task_done()
 
-        watch_tasks = [watch_exchange(exchange_id, symbols) for exchange_id in self.exchanges]
+        watch_tasks = [watch_trades_(exchange_id, symbols) for exchange_id in self.exchanges]
         worker_tasks = [process_trades() for _ in range(len(self.exchanges))]
         all_tasks = watch_tasks + worker_tasks
 
@@ -85,6 +95,19 @@ class CCXTManager:
     def handle_trades(self, exchange, trades, orderbook):
         [self.agg.calculate_stats(exchange, trade['symbol'], trade) for trade in trades]
         self.agg.report()
+        
+    def start_watch_trades(self, symbols):
+        self.thread = threading.Thread(target=self._run_watch_trades, args=(symbols,))
+        self.thread.start()
+
+    def _run_watch_trades(self, symbols):
+        asyncio.run(self.watch_trades(symbols))
+        
+    def pause_trades(self, exchange_id, symbol):
+        self.pause_events[(exchange_id, symbol)].clear()  # Clear the event to pause watch_trades_
+
+    def resume_trades(self, exchange_id, symbol):
+        self.pause_events[(exchange_id, symbol)].set()
         
     async def fetch_all_candles(
         self,

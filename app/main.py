@@ -1,19 +1,45 @@
 import asyncio
+import datetime
 import logging
+import time
+import dearpygui.dearpygui as dpg
+import pandas as pd
+from ui.chart import Chart
+from ui.main_menu import MainMenu
 from api.ccxt_manager import CCXTManager
-
+from ui.viewport import View_Port
 
 # symbols = ['BTC/USD', 'BTC/USDT', 'ETH/USD', 'ETH/USDT']
 # exchanges = ['coinbasepro', 'bitfinex', 'kraken', 'bitstamp', 'kucoin', 'binanceus']
 
-symbols = ['ETH/USDT']
-exchanges = ['binanceus']
-
+symbols = ['BTC/USD']
+exchanges = ['coinbasepro']
 manager = CCXTManager(exchanges)
-try:
-    # asyncio.run(manager.watch_exchanges(symbols))
-    print(asyncio.run(manager.fetch_all_candles(symbols=symbols, timeframe='1m', since=None, limit=1000, resample_timeframe=None)))
-except KeyboardInterrupt:
-    logging.info("Program stopped by user. All tasks cancelled and exchanges closed.")
-finally:
-    asyncio.run(manager.close_all_exchanges())
+
+manager.start_watch_trades(symbols)
+print('Sleeping for 15s')
+time.sleep(5)
+
+manager.pause_trades('coinbasepro', 'BTC/USD')
+print('Sleeping for 5s')
+time.sleep(5)
+
+manager.resume_trades('coinbasepro', 'BTC/USD')
+
+# with View_Port('MarketWatch') as viewport:
+    
+#     main_menu = MainMenu(viewport.tag)
+#     chart = Chart(manager, viewport.tag)
+    
+#     # try:
+#     #     # asyncio.run(manager.watch_exchanges(symbols))
+#     #     df = asyncio.run(manager.fetch_all_candles(symbols=symbols, timeframe='1h', since=None, limit=1000, resample_timeframe=None))
+#     # except KeyboardInterrupt:
+#     #     logging.info("Program stopped by user. All tasks cancelled and exchanges closed.")
+#     # finally:
+#     #     asyncio.run(manager.close_all_exchanges())
+    
+#     # df = df[0]
+#     # chart.draw_chart(df[0], df[1], df[2], df[3])
+    
+#     viewport.run()
