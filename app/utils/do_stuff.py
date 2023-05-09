@@ -160,11 +160,18 @@ def searcher(searcher, result, search_list):
     """
     modified_list = []
 
-    if dpg.get_value(searcher) == "*":
+    search_value = dpg.get_value(searcher)
+    if search_value is None:
+        search_value = ""
+
+    if search_value == "*":
         modified_list.extend(iter(search_list))
 
-    if dpg.get_value(searcher).lower():
-        modified_list.extend(item for item in search_list if dpg.get_value(searcher).lower() in item.lower())
+    elif search_value.lower():
+        modified_list.extend(item for item in search_list if search_value.lower() in item.lower())
+
+    else:
+        modified_list.extend(search_list)
 
     dpg.configure_item(result, items=modified_list)
 

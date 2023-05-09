@@ -23,7 +23,6 @@ class View_Port:
         self.title = title
         self.tag = "root"
         # self.aggr = CryptoData()
-        self.thread = threading.Thread()
         self.logger = logging.getLogger(__name__)
         self.monitor = get_monitors(is_primary=True)[0]
         self.logger.info(f"Primary Monitor: {self.monitor}")
@@ -56,15 +55,7 @@ class View_Port:
         self.logger.info("Running DearPyGUI loop.")
         while dpg.is_dearpygui_running():
             dpg.render_dearpygui_frame()
-            
-    def register_exchange(self, exchange):
-        self.exchange_objects.append(exchange)
-        
-    async def close_exchanges(self):
-        for exchange in self.exchange_objects:
-            await exchange.close()  
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.logger.info("Destroying DearPyGUI context.")
-        asyncio.run(self.close_exchanges())
         dpg.destroy_context()

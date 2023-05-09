@@ -18,9 +18,9 @@ class CCXTManager:
     """
     This class manages connections to CCXT exchanges.
     """
-    def __init__(self, exchanges) -> None:
+    async def __init__(self, exchanges) -> None:
         self.watched_exchanges = exchanges
-        self.exchanges = self.get_exchanges()
+        self.exchanges = await self.get_exchanges()
         self.influx = InfluxDB()
         self.agg = MarketAggregator(self.influx)
         self.ta = TechnicalAnalysis()
@@ -29,20 +29,31 @@ class CCXTManager:
         self.loop = asyncio.new_event_loop()
         self.pause_events = {}  
         
-    def get_exchanges(self):
+    @classmethod
+    async def create(cls, exchanges):
+        self = cls.__new__(cls)
+        await self.__init__(exchanges)
+        return self
+        
+    async def get_exchanges(self):
         supported_exchanges = {}
         for exchange_id in self.watched_exchanges:
             try:
                 exchange_class = getattr(ccxtpro, exchange_id)({'newUpdates': False})
+                await exchange_class.load_markets()
                 if exchange_class.has['watchTrades'] and exchange_class.has['fetchOHLCV']:
-                    supported_exchanges[exchange_id] = exchange_class
+                    supported_exchanges[exchange_id] = {
+                        "ccxt":exchange_class,
+                        "symbols": list(exchange_class.markets),
+                        "timeframes": list(exchange_class.timeframes.keys())
+                    }
             except Exception as e:
                 logging.error(f"Error creating exchange object for {exchange_id}: {e}")
         return supported_exchanges
     
     async def close_all_exchanges(self):
         async def close_exchange(exchange_id):
-            exchange = self.exchanges[exchange_id]
+            exchange = self.exchanges[exchange_id]["ccxt"]
             try:
                 await exchange.close()
                 logging.info(f"{exchange_id} closed successfully.")
@@ -54,7 +65,7 @@ class CCXTManager:
 
     async def watch_trades(self, symbols):
         async def watch_trades_(exchange_id, symbols):
-            exchange = self.exchanges[exchange_id]
+            exchange = self.exchanges[exchange_id]["ccxt"]
             try:
                 while True:
                     for symbol in symbols:
@@ -81,7 +92,7 @@ class CCXTManager:
                 self.handle_trades(exchange_id, trades, None)
                 self.trade_queue.task_done()
 
-        watch_tasks = [watch_trades_(exchange_id, symbols) for exchange_id in self.exchanges]
+        watch_tasks = [watch_trades_(exchange_id, symbols) for exchange_id in self.exchanges.keys()]
         worker_tasks = [process_trades() for _ in range(len(self.exchanges))]
         all_tasks = watch_tasks + worker_tasks
 
@@ -104,7 +115,7 @@ class CCXTManager:
         asyncio.run(self.watch_trades(symbols))
         
     def pause_trades(self, exchange_id, symbol):
-        self.pause_events[(exchange_id, symbol)].clear()  # Clear the event to pause watch_trades_
+        self.pause_events[(exchange_id, symbol)].clear()
 
     def resume_trades(self, exchange_id, symbol):
         self.pause_events[(exchange_id, symbol)].set()
@@ -116,10 +127,12 @@ class CCXTManager:
         since: str,
         limit: int,
         max_retries: int = 3,
-        resample_timeframe: Optional[str] = None
+        resample_timeframe: Optional[str] = None,
+        exchange: str = None
     ) -> List[Tuple[str, str, str, pd.DataFrame]]:
         fetch_tasks = []
-        for exchange_id in self.exchanges:
+        exchanges_to_use = [exchange] if exchange is not None else self.exchanges
+        for exchange_id in exchanges_to_use:
             for symbol in symbols:
                 task = asyncio.create_task(
                     self.fetch_candles_for_symbol(
@@ -132,11 +145,10 @@ class CCXTManager:
     async def fetch_candles_for_symbol(
         self, exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe) -> Tuple[str, str, str, pd.DataFrame]:
         
-        exchange = self.exchanges[exchange_id]
-        available_timeframes = list(exchange.timeframes.keys())
+        exchange = self.exchanges[exchange_id]["ccxt"]
 
         if resample_timeframe:
-            timeframe = self.find_highest_resample_timeframe(resample_timeframe, available_timeframes)
+            timeframe = self.find_highest_resample_timeframe(resample_timeframe, exchange.timeframes)
 
         timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
         timedelta = limit * timeframe_duration_in_seconds * 1000
@@ -199,6 +211,8 @@ class CCXTManager:
             if new_candle_batch is None:
                 break
 
+            print(len(new_candle_batch), "candles from", exchange.iso8601(new_candle_batch[0][0]), "to", exchange.iso8601(new_candle_batch[-1][0]))
+
             new_candles += new_candle_batch
 
             if len(new_candle_batch):
@@ -226,7 +240,6 @@ class CCXTManager:
         for _ in range(max_retries):
             try:
                 new_candle_batch = await exchange.fetch_ohlcv(symbol, timeframe, since=fetch_since, limit=limit)
-                print(len(new_candle_batch), "candles from", exchange.iso8601(new_candle_batch[0][0]), "to", exchange.iso8601(new_candle_batch[-1][0]))
             except (ccxt.ExchangeNotAvailable, ccxt.ExchangeError, ccxt.RequestTimeout, ccxt.BadSymbol) as e:
                 print(f"Error fetching data from {exchange.id} for {symbol}: {e}")
                 if isinstance(e, ccxt.BadSymbol):

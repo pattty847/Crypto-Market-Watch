@@ -11,9 +11,10 @@ class InfluxDB:
         self.query_api = self.client.query_api()
         self.delete_api = self.client.delete_api()
         
-    def get_influxdb_client(self):
+    def get_influxdb_client(self, local=False):
         return InfluxDBClient(
-            url="http://localhost:8086",
+            url="http://localhost:8086" if local else "https://us-east-1-1.aws.cloud2.influxdata.com",
             token=self.config['INFLUXDB_TOKEN'],
-            org="pepe"
+            org="pepe",
+            verify_ssl=False
         )

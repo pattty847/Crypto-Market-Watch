@@ -1,0 +1,11 @@
+{
+    "last_saved": {
+        "coinbasepro": ["BTC/USD", "1h"]
+    },
+    "coinbasepro": {
+        "BTC/USD":"1h",
+        "BTC/USDT":"6h",
+        "ETH/USD":"1h",
+        "ETH/USDT":"6h"
+    }
+}

@@ -1,3 +1,5 @@
+import asyncio
+import json
 import dearpygui.dearpygui as dpg
 import utils.do_stuff as do
 import pandas as pd
@@ -8,6 +10,8 @@ class Chart:
     def __init__(self, ccxt_manager, parent) -> None:
         self.parent = parent
         self.manager = ccxt_manager
+        self.last_chart = None
+        self.draw_default_chart()
         
         with dpg.child_window(menubar=True, parent=self.parent) as self.chart_window:
             with dpg.menu_bar():
@@ -15,35 +19,50 @@ class Chart:
                     dpg.add_menu_item(label='Select Chart', callback=self.chart_selection_window)
                     dpg.add_slider_float(label="Candle Width", default_value=1.0, max_value=5.0, format='width = %.2f', callback=lambda s, a, u: dpg.configure_item('chart', weight=round(a, 2)))
             
-    def draw_chart(self, exchange, symbol, timeframe, candles):
-                
-            with dpg.subplots(
-                rows=2,
-                columns=1,
-                label=f"{exchange.upper()} | {symbol.upper()} | {timeframe}",
-                row_ratios=[80, 20],
-                link_all_x=True,
-                width=-1,
-                height=-1,
-                parent=self.chart_window):
-                
-                dates = [pd.Timestamp(date).timestamp() for date in candles["dates"]]
-                
-                with dpg.plot(use_local_time=True):
-                    dpg.add_plot_legend()
-                    xaxis = dpg.add_plot_axis(dpg.mvXAxis, time=True)
-                    with dpg.plot_axis(dpg.mvYAxis, label="USD"):
-                        dpg.add_candle_series(dates, candles['opens'].values, candles['closes'].values, candles['lows'].values, candles['highs'].values, time_unit=do.convert_timeframe(timeframe), tag='chart')
-                        dpg.fit_axis_data(dpg.top_container_stack())
-                    dpg.fit_axis_data(xaxis)
+    def draw_default_chart(self):
+        with open('favorites.json', 'r') as f:
+            self.favorites = json.load(f)
 
-                with dpg.plot(use_local_time=True):
-                    dpg.add_plot_legend()
-                    xaxis_vol = dpg.add_plot_axis(dpg.mvXAxis, label="Time [UTC]", time=True)
-                    with dpg.plot_axis(dpg.mvYAxis, label="USD"):
-                        self.bar_series = dpg.add_line_series(dates, candles['volumes'].values)
-                        dpg.fit_axis_data(dpg.top_container_stack())
-                    dpg.fit_axis_data(xaxis_vol)
+        exchange = next(iter(self.favorites["last_saved"]))
+        symbol, timeframe = self.favorites["last_saved"][exchange]
+
+        self.draw_chart(exchange, symbol, timeframe)
+
+    def draw_chart(self, exchange, symbol, timeframe, candles):
+            
+        if self.last_chart is None:
+            self.last_chart = dpg.generate_uuid()
+        else:
+            dpg.delete_item(self.last_chart)
+            
+        with dpg.subplots(
+            rows=2,
+            columns=1,
+            label=f"{exchange.upper()} | {symbol.upper()} | {timeframe}",
+            row_ratios=[80, 20],
+            link_all_x=True,
+            width=-1,
+            height=-1,
+            parent=self.chart_window,
+            tag=self.last_chart):
+            
+            dates = [pd.Timestamp(date).timestamp() for date in candles["dates"]]
+            
+            with dpg.plot(use_local_time=True):
+                dpg.add_plot_legend()
+                xaxis = dpg.add_plot_axis(dpg.mvXAxis, time=True)
+                with dpg.plot_axis(dpg.mvYAxis, label="USD"):
+                    dpg.add_candle_series(dates, candles['opens'].values, candles['closes'].values, candles['lows'].values, candles['highs'].values, time_unit=do.convert_timeframe(timeframe), tag='chart')
+                    dpg.fit_axis_data(dpg.top_container_stack())
+                dpg.fit_axis_data(xaxis)
+
+            with dpg.plot(use_local_time=True):
+                dpg.add_plot_legend()
+                xaxis_vol = dpg.add_plot_axis(dpg.mvXAxis, label="Time [UTC]", time=True)
+                with dpg.plot_axis(dpg.mvYAxis, label="USD"):
+                    self.bar_series = dpg.add_line_series(dates, candles['volumes'].values)
+                    dpg.fit_axis_data(dpg.top_container_stack())
+                dpg.fit_axis_data(xaxis_vol)
         
     def update_chart(self, trades, exchange_object):
         # store the timeframe in milliseconds
@@ -105,5 +124,16 @@ class Chart:
             )
             
     def chart_selection_window(self, sender, app_data, user_data):
-        with dpg.window(popup=True, modal=True, width=500, height=500):
-            pass
+        with dpg.window(popup=True, modal=True, width=dpg.get_viewport_width() * 0.75, height=dpg.get_viewport_height() * 0.50):
+            for exchange in self.manager.watched_exchanges:
+                symbols = self.manager.exchanges[exchange]['symbols']
+                timeframes = self.manager.exchanges[exchange]['timeframes']
+                with dpg.child_window(width=-1 , height=-1):
+                    dpg.add_text(f"{exchange.upper()}")
+                    with dpg.child_window(width=-1, height=-1):
+                        dpg.add_input_text(hint='Search', callback= lambda s, a, u: self.search_symbol(s, exchange, sorted(symbols)))
+                        dpg.add_listbox(sorted(symbols), width=-1, num_items=10, tag=exchange)
+                        dpg.add_listbox(timeframes, width=-1, num_items=len(timeframes))
+
+    def search_symbol(self, searcher, result, search_list):
+        do.searcher(searcher, result, search_list)
