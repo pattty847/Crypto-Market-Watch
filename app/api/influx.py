@@ -4,6 +4,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 
 class InfluxDB:
     def __init__(self) -> None:
+        # Create a config.json file and store your INFLUX token as a key value pair
         with open('config.json', 'r') as f:
             self.config = json.load(f)
         self.client = self.get_influxdb_client()

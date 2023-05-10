@@ -51,6 +51,29 @@ class CCXTManager:
                 logging.error(f"Error creating exchange object for {exchange_id}: {e}")
         return supported_exchanges
     
+    async def add_exchange(self, exchange_id):
+        if exchange_id in self.exchanges.keys():
+            raise KeyError
+        try:
+            exchange_class = getattr(ccxtpro, exchange_id)({'newUpdates': False})
+            await exchange_class.load_markets()
+            if exchange_class.has['watchTrades'] and exchange_class.has['fetchOHLCV']:
+                self.exchanges[exchange_id] = {
+                    "ccxt":exchange_class,
+                    "symbols": list(exchange_class.markets),
+                    "timeframes": list(exchange_class.timeframes.keys())
+                }
+                self.watched_exchanges.append(exchange_id)
+        except Exception as e:
+            logging.error(f"Error adding exchange {exchange_id}: {e}")
+
+    async def remove_exchange(self, exchange_id):
+        if exchange_id in self.exchanges:
+            del self.exchanges[exchange_id]
+            self.watched_exchanges.remove(exchange_id)
+        else:
+            logging.error(f"Exchange {exchange_id} is not in the list of exchanges")
+    
     async def close_all_exchanges(self):
         async def close_exchange(exchange_id):
             exchange = self.exchanges[exchange_id]["ccxt"]
@@ -128,10 +151,10 @@ class CCXTManager:
         limit: int,
         max_retries: int = 3,
         resample_timeframe: Optional[str] = None,
-        exchange: str = None
+        exchange: list = None
     ) -> List[Tuple[str, str, str, pd.DataFrame]]:
         fetch_tasks = []
-        exchanges_to_use = [exchange] if exchange is not None else self.exchanges
+        exchanges_to_use = exchange if exchange is not None else self.exchanges
         for exchange_id in exchanges_to_use:
             for symbol in symbols:
                 task = asyncio.create_task(
