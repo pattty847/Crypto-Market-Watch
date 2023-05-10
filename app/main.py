@@ -15,8 +15,8 @@ from ui.viewport import View_Port
 async def main():
     symbols = ['BTC/USD']
     exchanges = ['coinbasepro']
-
-    manager = await CCXTManager.create(exchanges)
+    loop = asyncio.new_event_loop()
+    manager = await CCXTManager.create(exchanges, loop)
 
     with View_Port('MarketWatch') as viewport:
     

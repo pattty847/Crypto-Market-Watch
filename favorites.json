@@ -1,11 +1,1 @@
-{
-    "last_saved": {
-        "coinbasepro": ["BTC/USD", "1h"]
-    },
-    "coinbasepro": {
-        "BTC/USD":"1h",
-        "BTC/USDT":"6h",
-        "ETH/USD":"1h",
-        "ETH/USDT":"6h"
-    }
-}
+{"last_saved": {"coinbasepro": ["BTC/USD", "1h"]}, "favorites": [{"exchange": "coinbasepro", "symbol": "BTC/USD", "timeframe": "15m"}, {"exchange": "coinbasepro", "symbol": "BTC/USD", "timeframe": "1m"}]}

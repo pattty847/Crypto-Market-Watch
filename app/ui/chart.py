@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import dearpygui.dearpygui as dpg
 import utils.do_stuff as do
 import pandas as pd
@@ -11,22 +12,99 @@ class Chart:
         self.parent = parent
         self.manager = ccxt_manager
         self.last_chart = None
-        self.draw_default_chart()
+        
+        self.load_favorites()
+            
+        # self.draw_default_chart()
         
         with dpg.child_window(menubar=True, parent=self.parent) as self.chart_window:
             with dpg.menu_bar():
                 with dpg.menu(label="Chart"):
-                    dpg.add_menu_item(label='Select Chart', callback=self.chart_selection_window)
+                    dpg.add_menu_item(label='Select Chart', callback=self.chart_and_favorites_window)
                     dpg.add_slider_float(label="Candle Width", default_value=1.0, max_value=5.0, format='width = %.2f', callback=lambda s, a, u: dpg.configure_item('chart', weight=round(a, 2)))
+
+    def chart_and_favorites_window(self, sender, app_data, user_data):
+        with dpg.window(label="Chart Selection and Favorites", width=466, height=444, pos=(25, 25)):
+            
+            with dpg.tab_bar():
+                with dpg.tab(label="Chart Selection"):
+                    # Chart Selection
+                    with dpg.child_window(width=-1, height=-1):
+                        for exchange in self.manager.watched_exchanges:
+                            symbols = self.manager.exchanges[exchange]['symbols']
+                            timeframes = self.manager.exchanges[exchange]['timeframes']
+                            with dpg.child_window(width=-1, height=-1):
+                                dpg.add_text(f"{exchange.upper()}")
+                                with dpg.child_window(width=-1, height=-1):
+                                    
+                                    dpg.add_input_text(hint='Search', callback=lambda s, a, u: self.search_symbol(s, exchange, sorted(symbols)))
+                                    dpg.add_listbox(sorted(symbols), width=-1, num_items=7, tag=f'{exchange}_symbol_listbox')
+                                    
+                                    dpg.add_input_text(hint='Custom TF (13m, 33m, 80m, 3h, 8h, etc)', width=-1, tag=f'{exchange}_custom_tf_text')
+                                    dpg.add_listbox(timeframes, width=-1, num_items=7, tag=f'{exchange}_timeframe_listbox')
+                                    
+                                    dpg.add_button(label="Push to Chart", width=-1)
+                                    dpg.add_button(label="Add to Favorites", width=-1, callback=lambda s, a, u: self.add_favorite(
+                                        exchange,
+                                        dpg.get_value(f'{exchange}_symbol_listbox'), 
+                                        dpg.get_value(f'{exchange}_timeframe_listbox')))
+                                        
+                with dpg.tab(label="Favorites"):
+                    # Favorites
+                    with dpg.child_window(label="Favorites", width=-1, height=-1, tag='favorites'):
+                        self.draw_favorites_list()
+
+        # Overwrite the "favorites" list in the JSON file
+        self.save_favorites()
+
+    def draw_favorites_list(self):
+        if dpg.does_item_exist("favorites_list"):
+            dpg.delete_item("favorites_list")
+
+        with dpg.child_window(id="favorites_list", parent="favorites", autosize_x=True, autosize_y=False, horizontal_scrollbar=True):
+            for index, favorite in enumerate(self.favorites["favorites"]):
+                dpg.add_text(f"{favorite['exchange']} {favorite['symbol']} {favorite['timeframe']}", bullet=True, indent=10)
+                with dpg.group(horizontal=True):
+                    dpg.add_spacer()
+                    dpg.add_button(label="Remove", callback=self.remove_favorite, user_data=index)
+                dpg.add_separator()
+                dpg.add_spacer()
             
     def draw_default_chart(self):
-        with open('favorites.json', 'r') as f:
-            self.favorites = json.load(f)
-
         exchange = next(iter(self.favorites["last_saved"]))
         symbol, timeframe = self.favorites["last_saved"][exchange]
-
         self.draw_chart(exchange, symbol, timeframe)
+        
+    def load_favorites(self):
+        if os.path.exists('favorites.json'):
+            with open('favorites.json', 'r') as f:
+                self.favorites = json.load(f)
+        else:
+            self.favorites = {"last_saved": {}, "favorites": []}
+        
+    def save_favorites(self):
+        with open('favorites.json', 'w') as f:
+            json.dump(self.favorites, f)
+
+    def add_favorite(self, exchange, symbol, timeframe):
+        favorite = {"exchange": exchange, "symbol": symbol, "timeframe": timeframe}
+        
+        print(favorite)
+        return
+        
+        if favorite not in self.favorites["favorites"]:
+            self.favorites["favorites"].append(favorite)
+            self.save_favorites()
+        favorite_str = f"{favorite['exchange']} - {favorite['symbol']} ({favorite['timeframe']}) added to favorites."
+        dpg.set_value('added_favorite', favorite_str)
+
+    def remove_favorite(self, sender, app_data, user_data):
+        del self.favorites["favorites"][user_data]
+        self.save_favorites()
+        self.draw_favorites_list()
+
+    def search_symbol(self, searcher, result, search_list):
+        do.searcher(searcher, result, search_list)
 
     def draw_chart(self, exchange, symbol, timeframe, candles):
             
@@ -122,18 +200,3 @@ class Chart:
                 x=candles['dates'].values,
                 y=candles['volumes'].values
             )
-            
-    def chart_selection_window(self, sender, app_data, user_data):
-        with dpg.window(popup=True, modal=True, width=dpg.get_viewport_width() * 0.75, height=dpg.get_viewport_height() * 0.50):
-            for exchange in self.manager.watched_exchanges:
-                symbols = self.manager.exchanges[exchange]['symbols']
-                timeframes = self.manager.exchanges[exchange]['timeframes']
-                with dpg.child_window(width=-1 , height=-1):
-                    dpg.add_text(f"{exchange.upper()}")
-                    with dpg.child_window(width=-1, height=-1):
-                        dpg.add_input_text(hint='Search', callback= lambda s, a, u: self.search_symbol(s, exchange, sorted(symbols)))
-                        dpg.add_listbox(sorted(symbols), width=-1, num_items=10, tag=exchange)
-                        dpg.add_listbox(timeframes, width=-1, num_items=len(timeframes))
-
-    def search_symbol(self, searcher, result, search_list):
-        do.searcher(searcher, result, search_list)

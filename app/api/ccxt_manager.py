@@ -18,24 +18,24 @@ class CCXTManager:
     """
     This class manages connections to CCXT exchanges.
     """
-    async def __init__(self, exchanges) -> None:
+    async def __init__(self, exchanges, loop) -> None:
         self.watched_exchanges = exchanges
-        self.exchanges = await self.get_exchanges()
+        self.exchanges = await self.load_exchanges()
         self.influx = InfluxDB()
         self.agg = MarketAggregator(self.influx)
         self.ta = TechnicalAnalysis()
         self.trade_queue = Queue()
         self.thread = threading.Thread()
-        self.loop = asyncio.new_event_loop()
+        self.loop = loop
         self.pause_events = {}  
         
     @classmethod
-    async def create(cls, exchanges):
+    async def create(cls, exchanges, loop):
         self = cls.__new__(cls)
-        await self.__init__(exchanges)
+        await self.__init__(exchanges, loop)
         return self
         
-    async def get_exchanges(self):
+    async def load_exchanges(self):
         supported_exchanges = {}
         for exchange_id in self.watched_exchanges:
             try:
