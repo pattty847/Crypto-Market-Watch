@@ -1,8 +1,4 @@
 import asyncio
-import datetime
-import logging
-import time
-import dearpygui.dearpygui as dpg
 import pandas as pd
 from ui.chart import Chart
 from ui.main_menu import MainMenu
@@ -16,17 +12,16 @@ async def main():
     symbols = ['BTC/USD']
     exchanges = ['coinbasepro']
 
-    manager = await CCXTManager.create(exchanges)
-
     with View_Port('MarketWatch') as viewport:
     
+        manager = await CCXTManager.create(exchanges)
         main_menu = MainMenu(viewport.tag)
-        chart = Chart(manager, viewport.tag)
+        chart = await Chart.create(manager, viewport.tag)
         
-        df = await manager.fetch_all_candles(exchange=exchanges[0], symbols=symbols, timeframe='1h', since=None, limit=1000, resample_timeframe=None)
+        # df = await manager.fetch_all_candles(exchange=exchanges[0], symbols=symbols, timeframe='1h', since=None, limit=1000, resample_timeframe=None)
         
-        df = df[0]
-        chart.draw_chart(df[0], df[1], df[2], df[3])
+        # df = df[0]
+        # chart.draw_chart(df[0], df[1], df[2], df[3])
         
         viewport.run()
 

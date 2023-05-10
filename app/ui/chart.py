@@ -7,11 +7,17 @@ import pandas as pd
 
 class Chart:
     
-    def __init__(self, ccxt_manager, parent) -> None:
+    async def __init__(self, ccxt_manager, parent) -> None:
         self.parent = parent
         self.manager = ccxt_manager
         self.last_chart = None
-        self.draw_default_chart()
+        self.last_saved_chart = [{"exchange":"coinbasepro", "symbol":"BTC/USD", "timeframe":"1h"}]
+
+        self.indicators = [
+            'RSI', 'MACD', 'Bollinger Bands', 'SMA', 'EMA', 'HMA'
+        ]
+
+        # self.draw_default_chart()
         
         with dpg.child_window(menubar=True, parent=self.parent) as self.chart_window:
             with dpg.menu_bar():
@@ -19,6 +25,32 @@ class Chart:
                     dpg.add_menu_item(label='Select Chart', callback=self.chart_selection_window)
                     dpg.add_slider_float(label="Candle Width", default_value=1.0, max_value=5.0, format='width = %.2f', callback=lambda s, a, u: dpg.configure_item('chart', weight=round(a, 2)))
             
+                with dpg.menu(label='Indicators'):
+                    for indicator in self.indicators:
+                        dpg.add_menu_item(label=indicator)         
+
+            with dpg.tab_bar():
+                for chart in self.last_saved_chart:
+                    exchange = chart['exchange']
+                    symbol = chart['symbol']
+                    timeframe = chart['timeframe']
+                    with dpg.tab(label=f"{symbol}:{timeframe}"):
+                        candles = await self.manager.fetch_all_candles(
+                            exchange=[exchange],
+                            symbols=[symbol],
+                            timeframe=timeframe, 
+                            since=None, 
+                            limit=1000, 
+                            resample_timeframe=None
+                        )
+                        self.draw_chart(exchange, symbol, timeframe, candles[0][3])
+
+    @classmethod
+    async def create(cls, ccxt_manager, parent):
+        self = cls.__new__(cls)
+        await self.__init__(ccxt_manager, parent)
+        return self
+
     def draw_default_chart(self):
         with open('favorites.json', 'r') as f:
             self.favorites = json.load(f)
@@ -29,6 +61,8 @@ class Chart:
         self.draw_chart(exchange, symbol, timeframe)
 
     def draw_chart(self, exchange, symbol, timeframe, candles):
+
+        self.candles = candles
             
         if self.last_chart is None:
             self.last_chart = dpg.generate_uuid()
