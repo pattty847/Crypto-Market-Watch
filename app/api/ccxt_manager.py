@@ -1,3 +1,4 @@
+import json
 import threading
 import ccxt
 import ccxt.pro as ccxtpro
@@ -18,10 +19,10 @@ class CCXTManager:
     """
     This class manages connections to CCXT exchanges.
     """
-    async def __init__(self, exchanges, loop) -> None:
+    async def __init__(self, exchanges, loop, influx) -> None:
         self.watched_exchanges = exchanges
         self.exchanges = await self.load_exchanges()
-        self.influx = InfluxDB()
+        self.influx = influx
         self.agg = MarketAggregator(self.influx)
         self.ta = TechnicalAnalysis()
         self.trade_queue = Queue()
@@ -30,9 +31,9 @@ class CCXTManager:
         self.pause_events = {}  
         
     @classmethod
-    async def create(cls, exchanges, loop):
+    async def create(cls, exchanges, loop, influx):
         self = cls.__new__(cls)
-        await self.__init__(exchanges, loop)
+        await self.__init__(exchanges, loop, influx)
         return self
         
     async def load_exchanges(self):
@@ -145,30 +146,34 @@ class CCXTManager:
         
     async def fetch_all_candles(
         self,
-        symbols: List[str],
-        timeframe: str,
+        charts: List[Dict[str, str]],
         since: str,
         limit: int,
         max_retries: int = 3,
         resample_timeframe: Optional[str] = None,
-        exchange: list = None
     ) -> List[Tuple[str, str, str, pd.DataFrame]]:
         fetch_tasks = []
-        exchanges_to_use = exchange if exchange is not None else self.exchanges
-        for exchange_id in exchanges_to_use:
-            for symbol in symbols:
-                task = asyncio.create_task(
-                    self.fetch_candles_for_symbol(
-                        exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe)
-                )
-                fetch_tasks.append(task)
+        for chart in charts:
+            exchange_id = chart['exchange']
+            symbol = chart['symbol']
+            timeframe = chart['timeframe']
+            task = asyncio.create_task(
+                self.fetch_candles_for_symbol(
+                    exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe)
+            )
+            fetch_tasks.append(task)
 
         return await asyncio.gather(*fetch_tasks)
+
         
     async def fetch_candles_for_symbol(
         self, exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe) -> Tuple[str, str, str, pd.DataFrame]:
         
         exchange = self.exchanges[exchange_id]["ccxt"]
+        
+        if symbol not in self.exchanges[exchange_id]["symbols"]:
+            print(f"Symbol {symbol} does not exist for exchange {exchange_id}. Skipping fetch.")
+            return (exchange_id, symbol, timeframe, pd.DataFrame())
 
         if resample_timeframe:
             timeframe = self.find_highest_resample_timeframe(resample_timeframe, exchange.timeframes)
@@ -177,8 +182,12 @@ class CCXTManager:
         timedelta = limit * timeframe_duration_in_seconds * 1000
         now = exchange.milliseconds()
 
-        loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
-        
+        try:
+            loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
+        except Exception as e:
+            print(f"Error reading data from InfluxDB for {symbol} on {exchange_id}: {str(e)}")
+            return (exchange_id, symbol, timeframe, pd.DataFrame())
+
         fetch_since = (
             exchange.parse8601(since) if loaded_candles.empty else int(loaded_candles["dates"].iloc[-1].timestamp() * 1000)
         )
@@ -195,8 +204,8 @@ class CCXTManager:
                 timedelta
             )
         except Exception as e:
-            # Handle exception appropriately (e.g., log, retry, or propagate)
-            raise e
+            print(f"Error fetching data from {exchange_id} for {symbol}: {str(e)}")
+            return (exchange_id, symbol, timeframe, pd.DataFrame())
 
         loaded_candles = self.concat_new_candles(loaded_candles, new_candles)
 
@@ -204,16 +213,12 @@ class CCXTManager:
         new_candles_ = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])
         self.write_candles_to_influxdb(exchange_id, symbol, timeframe, new_candles_)
 
-        # Read the candles back from InfluxDB after writing
-        loaded_candles = self.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
-
-        await exchange.close()
-
         if resample_timeframe:
             loaded_candles = self.ta.resample_dataframe(loaded_candles, timeframe, resample_timeframe)
             timeframe = resample_timeframe
 
         return (exchange_id, symbol, timeframe, loaded_candles)
+
 
     async def fetch_new_candles(
         self,
@@ -234,7 +239,7 @@ class CCXTManager:
             if new_candle_batch is None:
                 break
 
-            print(len(new_candle_batch), "candles from", exchange.iso8601(new_candle_batch[0][0]), "to", exchange.iso8601(new_candle_batch[-1][0]))
+            print(len(new_candle_batch), "new candle(s) from", exchange.iso8601(new_candle_batch[0][0]), "to", exchange.iso8601(new_candle_batch[-1][0]))
 
             new_candles += new_candle_batch
 
@@ -248,7 +253,6 @@ class CCXTManager:
             else:
                 fetch_since = last_time
 
-        await exchange.close()
         return new_candles
 
     async def retry_request(

@@ -1,5 +1,7 @@
 import asyncio
 import pandas as pd
+from api.influx import InfluxDB
+from ui.notifications import NotificationManager
 from ui.chart import Chart
 from ui.main_menu import MainMenu
 from api.ccxt_manager import CCXTManager
@@ -10,18 +12,15 @@ from ui.viewport import View_Port
 
 async def main():
     symbols = ['BTC/USD']
-    exchanges = ['coinbasepro']
+    exchanges = ['coinbasepro', 'bybit']
 
     with View_Port('MarketWatch') as viewport:
-    
-        manager = await CCXTManager.create(exchanges)
+        influx = InfluxDB(local=False)
+        loop = asyncio.new_event_loop()
+        notifications = NotificationManager()
+        manager = await CCXTManager.create(exchanges, loop, influx)
         main_menu = MainMenu(viewport.tag)
-        chart = await Chart.create(manager, viewport.tag)
-        
-        # df = await manager.fetch_all_candles(exchange=exchanges[0], symbols=symbols, timeframe='1h', since=None, limit=1000, resample_timeframe=None)
-        
-        # df = df[0]
-        # chart.draw_chart(df[0], df[1], df[2], df[3])
+        chart = await Chart.create(manager, viewport.tag, notifications)
         
         viewport.run()
 
@@ -29,6 +28,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
 
 
 
