@@ -9,30 +9,29 @@ import pandas as pd
 
 class Chart:
     
-    def __init__(self, ccxt_manager, parent, notifications) -> None:
+    def __init__(self, ccxt_manager, parent) -> None:
         self.parent = parent
         self.manager = ccxt_manager
         self.last_chart = None
         self.last_saved_charts = [
             {"exchange":"coinbasepro", "symbol":"BTC/USD", "timeframe":"1h"},
-            {"exchange":"bybit", "symbol":"BTC/USDT", "timeframe":"1h"}
+            {"exchange":"coinbasepro", "symbol":"ETH/USD", "timeframe":"1h"}
         ]
+        self.chart_tags = {}
         self.indicators = [
             'RSI', 'MACD', 'Bollinger Bands', 'SMA', 'EMA', 'HMA'
         ]
-        self.notifications = notifications
         first_chart = self.last_saved_charts[0]
-        self.current_tab = f"{first_chart['exchange']}_{first_chart['symbol']}_{first_chart['timeframe']}_chart"
+        
+        # Used to determine what tab the user has visable
+        self.current_tab_tag = f"{first_chart['exchange']}_{first_chart['symbol']}_{first_chart['timeframe']}_chart"
         self.favorites = FavoritesManager()
-            
-        # self.draw_default_chart()
         
         with dpg.child_window(menubar=True, parent=self.parent) as self.chart_window:
             with dpg.menu_bar():
                 with dpg.menu(label="Chart"):
                     dpg.add_menu_item(label='Select Chart', callback=self.chart_and_favorites_window)
-                    dpg.add_menu_item(label='print', callback=lambda: print(dpg.get_item_children('tab_bar')))
-                    dpg.add_slider_float(label="Candle Width", default_value=1.0, max_value=5.0, format='width = %.2f', callback=lambda s, a, u: dpg.configure_item(self.current_tab, weight=round(a, 2)))
+                    dpg.add_slider_float(label="Candle Width", default_value=1.0, max_value=5.0, format='width = %.2f', callback=lambda s, a, u: dpg.configure_item(self.current_tab_tag, weight=round(a, 2)))
                 
                 with dpg.menu(label='Indicators'):
                     for indicator in self.indicators:
@@ -42,8 +41,8 @@ class Chart:
                 pass
 
     @classmethod
-    async def create(cls, ccxt_manager, parent, notifications):
-        self = cls(ccxt_manager, parent, notifications)
+    async def create(cls, ccxt_manager, parent):
+        self = cls(ccxt_manager, parent)
         await self.initialize()
         return self
 
@@ -63,6 +62,7 @@ class Chart:
             timeframe = chart['timeframe']
             parent = f'{exchange}_{symbol}_{timeframe}'
             tag = f'{parent}_chart'
+            self.chart_tags[(exchange, symbol, timeframe)] = tag
             with dpg.tab(label=f"{symbol}:{timeframe}", parent='tab_bar', tag=parent):
                 self.draw_chart(exchange, symbol, timeframe, candles[3], parent, tag)
 
@@ -126,7 +126,7 @@ class Chart:
                 dpg.add_plot_legend()
                 xaxis_vol = dpg.add_plot_axis(dpg.mvXAxis, label="Time [UTC]", time=True)
                 with dpg.plot_axis(dpg.mvYAxis, label="USD"):
-                    self.bar_series = dpg.add_line_series(dates, candles['volumes'].values)
+                    dpg.add_line_series(dates, candles['volumes'].values)
                     dpg.fit_axis_data(dpg.top_container_stack())
                 dpg.fit_axis_data(xaxis_vol)
         
@@ -201,4 +201,4 @@ class Chart:
         dpg.set_item_pos(window_tag, (pos_x, pos_y))
         
     def tab_callback(self, s, chart, u):
-        self.current_tab = f'{dpg.get_item_alias(chart)}_chart'
+        self.current_tab_tag = f'{dpg.get_item_alias(chart)}_chart'

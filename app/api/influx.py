@@ -1,6 +1,8 @@
 import json
-from influxdb_client import InfluxDBClient
+from typing import Dict
+from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
+import pandas as pd
 
 class InfluxDB:
     def __init__(self, local) -> None:
@@ -18,3 +20,98 @@ class InfluxDB:
             token=self.config['INFLUXDB_TOKEN'],
             org="pepe"
         )
+        
+    def write_candles_to_influxdb(
+        self,
+        exchange,
+        symbol: str,
+        timeframe: str,
+        candles: pd.DataFrame,
+        bucket: str = "candles",
+    ) -> None:
+        if candles.empty:
+            print(f"Skipping write to InfluxDB for {exchange} {symbol} {timeframe} as the DataFrame is empty.")
+            return
+        
+        symbol = symbol.replace("/", "_")
+        points = []
+
+        for record in candles.to_records():
+            point = Point("candle") \
+                .tag("exchange", exchange) \
+                .tag("symbol", symbol) \
+                .tag("timeframe", timeframe) \
+                .field("opens", record.opens) \
+                .field("highs", record.highs) \
+                .field("lows", record.lows) \
+                .field("closes", record.closes) \
+                .field("volumes", record.volumes) \
+                .time(record.dates, WritePrecision.MS)
+
+            points.append(point)
+            
+        print(f"Writing {len(candles['dates'])} candles to bucket: {bucket}, organization: 'pepe'")
+        
+        self.write_api.write(bucket, 'pepe', points)
+
+    def read_candles_from_influxdb(
+        self, exchange: str, symbol: str, timeframe: str, bucket="candles") -> Dict:
+
+        symbol = symbol.replace("/", "_")
+        
+        query = f"""
+        from(bucket: "{bucket}")
+        |> range(start: -30d)
+        |> filter(fn: (r) => r["_measurement"] == "candle")
+        |> filter(fn: (r) => r["exchange"] == "{exchange}")
+        |> filter(fn: (r) => r["symbol"] == "{symbol}")
+        |> filter(fn: (r) => r["timeframe"] == "{timeframe}")
+        |> filter(fn: (r) => r["_field"] == "closes" or r["_field"] == "highs" or r["_field"] == "lows" or r["_field"] == "opens" or r["_field"] == "volumes")
+        |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+        |> drop(columns: ["_start", "_stop"])
+        """
+
+        print(f"Fetching from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
+        result = self.query_api.query_data_frame(query, 'pepe')
+
+        if result.empty:
+            return pd.DataFrame(columns=["dates", "opens", "highs", "lows", "closes", "volumes"])
+        else:
+            result = result.rename(columns={"_time": "dates"})
+            result = result.reindex(columns=["dates", "opens", "highs", "lows", "closes", "volumes"])
+            return result
+        
+    def query_candles_from_influxdb(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start: str,
+        stop: str,
+        bucket: str = "candles",
+    ) -> pd.DataFrame:
+        symbol = symbol.replace("/", "_")
+        query = f'''
+        from(bucket: "{bucket}")
+        |> range(start: {start}, stop: {stop})
+        |> filter(fn: (r) => r["_measurement"] == "candle")
+        |> filter(fn: (r) => r["exchange"] == "{exchange}" and r["symbol"] == "{symbol}" and r["timeframe"] == "{timeframe}")
+        '''
+        tables = self.query_api.query(query, org='pepe')
+        
+        print(start, stop)
+
+        df = pd.DataFrame()  # initialize an empty DataFrame
+        for table in tables:
+            for record in table.records:
+                # each record is a single point in InfluxDB
+                df = df.append({
+                    "time": record.get_time().to_pydatetime(),
+                    "opens": record.get_value("opens"),
+                    "highs": record.get_value("highs"),
+                    "lows": record.get_value("lows"),
+                    "closes": record.get_value("closes"),
+                    "volumes": record.get_value("volumes"),
+                }, ignore_index=True)
+
+        return df

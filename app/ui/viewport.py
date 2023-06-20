@@ -1,10 +1,6 @@
-import asyncio
 import logging
-import threading
 import dearpygui.dearpygui as dpg
-
-# from .aggregate import CryptoData
-# from .aggregate_window import Window
+import dearpygui.demo as demo
 from screeninfo import get_monitors
 
 logging.basicConfig(
@@ -32,7 +28,9 @@ class View_Port:
     def __enter__(self):
         self.logger.info("Setting up DearPyGUI.")
         dpg.create_context()
-        dpg.add_window(tag=self.tag, no_resize=True) # primary window
+        with dpg.window(tag=self.tag, no_resize=True): # primary window
+            with dpg.menu_bar():
+                dpg.add_menu_item(label="Demo", callback=demo.show_demo)
         dpg.create_viewport(title=self.title, width=self.window_width, height=self.window_height, x_pos=self.window_x, y_pos=self.window_y)
         # dpg.set_viewport_resize_callback() you were finding a place to put this callback
         dpg.setup_dearpygui()
