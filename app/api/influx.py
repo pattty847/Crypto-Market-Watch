@@ -3,6 +3,7 @@ from typing import Dict
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 import pandas as pd
+import logging
 
 class InfluxDB:
     def __init__(self, local) -> None:
@@ -17,7 +18,7 @@ class InfluxDB:
     def get_influxdb_client(self, local=False):
         return InfluxDBClient(
             url="http://localhost:8086" if local else "https://us-east-1-1.aws.cloud2.influxdata.com",
-            token=self.config['INFLUXDB_TOKEN'],
+            token=self.config['INFLUXDB_TOKEN_LOCAL'] if local else self.config['INFLUXDB'],
             org="pepe"
         )
         
@@ -30,7 +31,7 @@ class InfluxDB:
         bucket: str = "candles",
     ) -> None:
         if candles.empty:
-            print(f"Skipping write to InfluxDB for {exchange} {symbol} {timeframe} as the DataFrame is empty.")
+            logging.warning(f"Skipping write to InfluxDB for {exchange} {symbol} {timeframe} as the DataFrame is empty.")
             return
         
         symbol = symbol.replace("/", "_")
@@ -50,7 +51,7 @@ class InfluxDB:
 
             points.append(point)
             
-        print(f"Writing {len(candles['dates'])} candles to bucket: {bucket}, organization: 'pepe'")
+        logging.info(f"Writing {len(candles['dates'])} candles to bucket: {bucket}, organization: 'pepe'")
         
         self.write_api.write(bucket, 'pepe', points)
 
@@ -71,7 +72,7 @@ class InfluxDB:
         |> drop(columns: ["_start", "_stop"])
         """
 
-        print(f"Fetching from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
+        logging.info(f"Fetching from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
         result = self.query_api.query_data_frame(query, 'pepe')
 
         if result.empty:
@@ -80,38 +81,3 @@ class InfluxDB:
             result = result.rename(columns={"_time": "dates"})
             result = result.reindex(columns=["dates", "opens", "highs", "lows", "closes", "volumes"])
             return result
-        
-    def query_candles_from_influxdb(
-        self,
-        exchange: str,
-        symbol: str,
-        timeframe: str,
-        start: str,
-        stop: str,
-        bucket: str = "candles",
-    ) -> pd.DataFrame:
-        symbol = symbol.replace("/", "_")
-        query = f'''
-        from(bucket: "{bucket}")
-        |> range(start: {start}, stop: {stop})
-        |> filter(fn: (r) => r["_measurement"] == "candle")
-        |> filter(fn: (r) => r["exchange"] == "{exchange}" and r["symbol"] == "{symbol}" and r["timeframe"] == "{timeframe}")
-        '''
-        tables = self.query_api.query(query, org='pepe')
-        
-        print(start, stop)
-
-        df = pd.DataFrame()  # initialize an empty DataFrame
-        for table in tables:
-            for record in table.records:
-                # each record is a single point in InfluxDB
-                df = df.append({
-                    "time": record.get_time().to_pydatetime(),
-                    "opens": record.get_value("opens"),
-                    "highs": record.get_value("highs"),
-                    "lows": record.get_value("lows"),
-                    "closes": record.get_value("closes"),
-                    "volumes": record.get_value("volumes"),
-                }, ignore_index=True)
-
-        return df

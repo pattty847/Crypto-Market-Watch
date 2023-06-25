@@ -6,13 +6,7 @@ import ccxt.pro as ccxtpro
 import logging
 import asyncio
 import pandas as pd
-import pandas as pd
-import numpy as np
 
-from pydantic import ValidationError
-from api.trade_model import Trade
-from api.influx import InfluxDB
-from influxdb_client import Point, WritePrecision
 from api.ta import TechnicalAnalysis
 from typing import Dict, List, Optional, Tuple
 from asyncio import Queue
@@ -44,14 +38,6 @@ class CCXTManager:
     # Watch Trades
 
     async def watch_trades(self, symbols: List[str]):
-        """
-        The watch_trades function is the main function of the TradeFeed class. It takes a list of symbols and watches trades on all exchanges in self.exchanges for those symbols, aggregating them into a single trade feed that can be accessed by calling report_trade_feed().
-        
-        :param self: Access the class attributes and methods
-        :param symbols: List[str]: Pass a list of symbols to the watch_trades function
-        :return: A coroutine object that can be awaited
-        :doc-author: Trelent
-        """
         async def watch_trades_(exchange_id, symbols):
             exchange = self.exchanges[exchange_id]["ccxt"]
             try:
@@ -114,11 +100,15 @@ class CCXTManager:
     
     #########################################################################################################
     # Fetch Candles
+    
+    
+    #TODO: FIX THESE ISSUES DURING LOADING/SAVING OF CANDLES
+    
 
-    async def fetch_all_candles(
+    async def fetch_candles(
         self,
         charts: List[Dict[str, str]],
-        since: str,
+        from_date: str,
         limit: int,
         max_retries: int = 3,
         resample_timeframe: Optional[str] = None,
@@ -129,16 +119,16 @@ class CCXTManager:
             symbol = chart['symbol']
             timeframe = chart['timeframe']
             task = asyncio.create_task(
-                self.fetch_candles_for_symbol(
-                    exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe)
+                self._fetch_candles(
+                    exchange_id, symbol, timeframe, from_date, limit, max_retries, resample_timeframe)
             )
             fetch_tasks.append(task)
 
         return await asyncio.gather(*fetch_tasks)
 
         
-    async def fetch_candles_for_symbol(
-        self, exchange_id, symbol, timeframe, since, limit, max_retries, resample_timeframe) -> Tuple[str, str, str, pd.DataFrame]:
+    async def _fetch_candles(
+        self, exchange_id, symbol, timeframe, from_date, limit, max_retries, resample_timeframe) -> Tuple[str, str, str, pd.DataFrame]:
         
         exchange = self.exchanges[exchange_id]["ccxt"]
         
@@ -154,21 +144,26 @@ class CCXTManager:
         now = exchange.milliseconds()
 
         try:
-            loaded_candles = self.influx.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
+            saved_candles = self.influx.read_candles_from_influxdb(exchange_id, symbol, timeframe or resample_timeframe)
         except Exception as e:
             print(f"Error reading data from InfluxDB for {symbol} on {exchange_id}: {str(e)}")
             return (exchange_id, symbol, timeframe, pd.DataFrame())
 
-        fetch_since = (
-            exchange.parse8601(since) if loaded_candles.empty else int(loaded_candles["dates"].iloc[-1].timestamp() * 1000)
+        fetch_from_date = (
+            exchange.parse8601(from_date) if saved_candles.empty else int(saved_candles["dates"].iloc[-1].timestamp() * 1000)
         )
+        
+        if not saved_candles.empty:
+            cached_candles = saved_candles.drop(saved_candles.index[-1])
+        else:
+            cached_candles = saved_candles
 
         try:
             new_candles = await self.fetch_new_candles(
                 exchange,
                 symbol,
                 timeframe,
-                fetch_since,
+                fetch_from_date,
                 limit,
                 max_retries,
                 now,
@@ -178,17 +173,17 @@ class CCXTManager:
             print(f"Error fetching data from {exchange_id} for {symbol}: {str(e)}")
             return (exchange_id, symbol, timeframe, pd.DataFrame())
 
-        loaded_candles = self.concat_new_candles(loaded_candles, new_candles)
+        concatted_candles = self.concat_candles(cached_candles, new_candles)
 
-        # Write the updated candles DataFrame to InfluxDB
+        # Write the unsaved candles DataFrame to InfluxDB
         new_candles_ = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])
         self.influx.write_candles_to_influxdb(exchange_id, symbol, timeframe, new_candles_)
 
         if resample_timeframe:
-            loaded_candles = self.ta.resample_dataframe(loaded_candles, timeframe, resample_timeframe)
+            concatted_candles = self.ta.resample_dataframe(concatted_candles, timeframe, resample_timeframe)
             timeframe = resample_timeframe
 
-        return (exchange_id, symbol, timeframe, loaded_candles)
+        return (exchange_id, symbol, timeframe, concatted_candles)
 
 
     async def fetch_new_candles(
@@ -196,7 +191,7 @@ class CCXTManager:
         exchange,
         symbol: str,
         timeframe: str,
-        fetch_since: int,
+        fetch_date: int,
         limit: int,
         max_retries: int,
         now: int,
@@ -205,7 +200,7 @@ class CCXTManager:
         new_candles = []
         done_fetching = False
         while not done_fetching:
-            new_candle_batch = await self.retry_request(exchange, symbol, timeframe, fetch_since, limit, max_retries)
+            new_candle_batch = await self.retry_fetch_candles(exchange, symbol, timeframe, fetch_date, limit, max_retries)
 
             if new_candle_batch is None:
                 break
@@ -217,16 +212,16 @@ class CCXTManager:
             if len(new_candle_batch):
                 last_time = new_candle_batch[-1][0] + exchange.parse_timeframe(timeframe) * 1000
             else:
-                last_time = fetch_since + timedelta
+                last_time = fetch_date + timedelta
 
             if last_time >= now:
                 done_fetching = True
             else:
-                fetch_since = last_time
+                fetch_date = last_time
 
         return new_candles
 
-    async def retry_request(
+    async def retry_fetch_candles(
         self,
         exchange,
         symbol: str,
@@ -246,7 +241,7 @@ class CCXTManager:
             return new_candle_batch
         return
 
-    def concat_new_candles(self, loaded_candles: pd.DataFrame, new_candles: List) -> pd.DataFrame:
+    def concat_candles(self, loaded_candles: pd.DataFrame, new_candles: List) -> pd.DataFrame:
         if new_candles is None:
             return loaded_candles
         
@@ -261,8 +256,6 @@ class CCXTManager:
             'volumes': 'sum'
         }).reset_index()
 
-        print(loaded_candles)
-
         return loaded_candles
 
     # End Fetch Candles
@@ -270,9 +263,9 @@ class CCXTManager:
     
     #########################################################################################################
     
-    def calculate_volatility(self):
+    def calculate_volatility(self, exchange, currency=None):
         # Fetch historical data from Coinbase Pro
-        exchange = ccxt.coinbasepro()
+        exchange = getattr(ccxt, exchange)()
         if not exchange.has['fetchTickers']: raise ValueError
         exchange.load_markets()
 
@@ -307,51 +300,15 @@ class CCXTManager:
 
         # Add column for relative volatility compared to Bitcoin
         df['relative_volatility'] = df['volatility'] / btc_volatility
+        
+        df.to_csv('relative_volatility.csv')
 
         return df
-
     
-    def z_scores_relative_to_bitcoin(self):
+    def z_score(self, exchange, csv=False):
         # Fetch historical data from Coinbase Pro
-        exchange = ccxt.coinbasepro()
-        exchange.load_markets()
-
-        # Get current time and time two weeks ago
-        end = exchange.milliseconds()
-        start = end - 1000 * 60 * 60 * 24 * 14  # 14 days ago
-
-        symbols = exchange.symbols
-
-        data = []
-        for symbol in symbols:
-            if '/USD' in symbol:
-                ohlcv = exchange.fetch_ohlcv(symbol, '1d', start, 14)
-                for candle in ohlcv:
-                    data.append({
-                        'symbol': symbol,
-                        'time': datetime.datetime.utcfromtimestamp(candle[0] / 1000),
-                        'price': candle[4],  # Close price
-                    })
-
-        # Convert to DataFrame
-        df = pd.DataFrame(data)
-
-        # Calculate mean and standard deviation for Bitcoin
-        btc_mean = df[df['symbol'] == 'BTC/USD']['price'].mean()
-        btc_std = df[df['symbol'] == 'BTC/USD']['price'].std()
-
-        # Calculate z-score for each coin relative to Bitcoin's mean and std
-        df['z_score'] = (df['price'] - btc_mean) / btc_std
-
-        # Get top 100 coins with highest and lowest z-score
-        top_100 = df.sort_values('z_score', ascending=False).head(100)
-        bottom_100 = df.sort_values('z_score').head(100)
-
-        return top_100, bottom_100
-    
-    def z_scores_relative_to_self(self):
-        # Fetch historical data from Coinbase Pro
-        exchange = ccxt.coinbasepro()
+        exchange = getattr(ccxt, exchange)()
+        if not exchange.has['fetchTickers']: raise ValueError
         exchange.load_markets()
 
         # Get current time and time two weeks ago
@@ -388,8 +345,89 @@ class CCXTManager:
         eth_z_score = df[df['symbol'] == 'ETH/USD']['z_score'].values[0]
         btc_z_score = df[df['symbol'] == 'BTC/USD']['z_score'].values[0]
         btc_z_score_relative_to_eth = btc_z_score - eth_z_score
+        
+        if csv:
+            top_100.to_csv('top100.csv')
 
         return top_100, btc_z_score_relative_to_eth
+    
+    def z_score_over_time(self, exchange, csv=False):
+        # Fetch historical data from Coinbase Pro
+        exchange = getattr(ccxt, exchange)()
+        exchange.load_markets()
+
+        # Get current time and time two weeks ago
+        end = exchange.milliseconds()
+        start = end - 1000 * 60 * 60 * 24 * 28  # 28 days ago
+
+        symbols = exchange.symbols
+
+        data = []
+        for symbol in symbols:
+            if '/USD' in symbol:
+                ohlcv = exchange.fetch_ohlcv(symbol, '1d', start, 28)
+                for candle in ohlcv:
+                    data.append({
+                        'symbol': symbol,
+                        'time': datetime.datetime.utcfromtimestamp(candle[0] / 1000),
+                        'price': candle[4],  # Close price
+                    })
+
+        # Convert to DataFrame
+        df = pd.DataFrame(data)
+
+        # Calculate rolling mean and standard deviation for each coin
+        df['mean'] = df.groupby('symbol')['price'].transform(lambda x: x.rolling(14).mean())
+        df['std'] = df.groupby('symbol')['price'].transform(lambda x: x.rolling(14).std())
+
+        # Calculate z-score for each coin
+        df['z_score'] = (df['price'] - df['mean']) / df['std']
+
+        # Drop rows with NaN values (these are the first 14 days for each coin where we don't have enough data to calculate the z-score)
+        df = df.dropna()
+
+        # Get top 100 coins with highest z-score for each day
+        top_100_per_day = df.groupby('time').apply(lambda x: x.nlargest(100, 'z_score'))
+
+        # Calculate Bitcoin's z-score relative to Ethereum for each day
+        btc_eth_z_scores = df[df['symbol'].isin(['BTC/USD', 'ETH/USD'])].pivot(index='time', columns='symbol', values='z_score')
+        btc_eth_z_scores['btc_z_score_relative_to_eth'] = btc_eth_z_scores['BTC/USD'] - btc_eth_z_scores['ETH/USD']
+
+        if csv:
+            top_100_per_day.to_csv('top100_per_day.csv')
+            btc_eth_z_scores.to_csv('btc_eth_z_scores.csv')
+
+        return top_100_per_day, btc_eth_z_scores
+    
+    def top_volume_coins(self, exchange_name):
+        # Create exchange object
+        exchange = getattr(ccxt, exchange)()
+        
+        # Check if fetch_tickers is available
+        if not exchange.has['fetchTickers']:
+            raise ValueError('The exchange does not support fetchTickers.')
+        
+        # Fetch tickers
+        tickers = exchange.fetch_tickers()
+        
+        # Initialize a list to store the data
+        data = []
+        
+        # Loop through the tickers and append the relevant data to the list
+        for symbol, ticker in tickers.items():
+            data.append({
+                'symbol': symbol,
+                'baseVolume': ticker['baseVolume']
+            })
+        
+        # Convert the list to a DataFrame
+        df = pd.DataFrame(data)
+        
+        # Sort the DataFrame by baseVolume in descending order and get the top 100
+        top_100 = df.sort_values('baseVolume', ascending=False).head(100)
+        
+        return top_100
+
 
     
     #########################################################################################################

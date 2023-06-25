@@ -15,14 +15,13 @@ from api.trade_model import Trade
 
 class MarketAggregator:
     
-    def __init__(self, influx):
+    def __init__(self):
         self.data = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
         self.order_size_categories = ['0-10k', '10k-100k', '100k-1m', '1m-10m', '10m-100m']
         self.combined_trades = {}
         self.prev_taker_id = None
         self.prev_timestamp = None
         self.timeframes = ["1m", "5m", "15m", "1h", "4h", "1d"]
-        self.influx = influx
             
     async def aggregate_trades(self, exchange_id: str, trades_data: List[dict]):
         # Use Pydantic to parse trades data into a list of Trade objects
@@ -101,29 +100,6 @@ class MarketAggregator:
         except Exception as e:
             print(f"Error processing trade data: {e}")
 
-
-
-    async def write_candles_to_db(self, exchange, symbol, timeframe, resampled):
-        for timestamp, row in resampled.iterrows():
-            candle = {
-                "measurement": f"{symbol}_{timeframe}",
-                "tags": {
-                    "exchange": exchange,
-                    "symbol": symbol,
-                },
-                "time": timestamp,
-                "fields": {
-                    "open": row["open"],
-                    "high": row["high"],
-                    "low": row["low"],
-                    "close": row["close"],
-                    "volume": row["amount"],
-                    "side": row["side"],
-                },
-            }
-            print(candle)
-
-
     def get_order_size_category(self, order_cost):
         if order_cost < 1e4:
             return '0-10k'
@@ -135,7 +111,6 @@ class MarketAggregator:
             return '1m-10m'
         elif order_cost < 1e8:
             return '10m-100m'
-
 
     def report_statistics(self):
         header = ['Exchange/Symbol', 'Volume', 'CVDΔ', '0-10k', '0-10kΔ', '10k-100k', '10k-100kΔ', '100k-1m', '100k-1mΔ', '1m-10m', '1m-10mΔ', '10m-100m', '10m-100mΔ']
@@ -162,25 +137,3 @@ class MarketAggregator:
             rows.append(row)
 
         print(tabulate(rows, headers=header, tablefmt='grid'))
-        
-        
-    def write_to_db(self, exchange, symbol, trade, order_cost, order_size_category, bucket):
-        
-        influx_client = self.influx.get_influxdb_client()
-        write_api = influx_client.write_api(write_options=SYNCHRONOUS)
-        
-        point = Point("trades") \
-            .tag("exchange", exchange) \
-            .tag("symbol", symbol) \
-            .tag("side", trade["side"]) \
-            .tag("order_size_category", order_size_category) \
-            .field("price", float(trade["price"])) \
-            .field("amount", float(trade["amount"])) \
-            .field("cost", order_cost) \
-            .time(trade["timestamp"] / 1000, WritePrecision.NS)
-        
-        try:
-            print(point.to_line_protocol())
-            write_api.write(bucket=bucket, org='pepe', record=point)
-        except Exception as e:
-            print(e)
