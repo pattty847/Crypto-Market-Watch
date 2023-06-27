@@ -1,3 +1,4 @@
+import logging
 from typing import List
 import ccxt
 import pandas as pd
@@ -27,11 +28,12 @@ def create_correlation_heatmap(exchange_id: str):
     exchange = getattr(ccxt, exchange_id)()
     exchange.load_markets()
 
-    symbols = exchange.symbols
+    symbols = ['BTC/USDT', 'ETH/USDT', 'XRP/USDT', 'PEPE/USDT', 'SOL/USDT', 'XMR/USDT', 'BCH/USDT', 'TOMI/USDT', 'BNB/USDT', 'AAVE/USDT', 'SHIB/USDT', 'LINK/USDT', 'DOGE/USDT']
 
     # Fetch the closing prices for each symbol.
     for symbol in symbols:
-        ohlcv = exchange.fetch_ohlcv(symbol, '1d')  # Get daily data
+        logging.info(f'Fetching {symbol}')
+        ohlcv = exchange.fetch_ohlcv(symbol, '1h')  # Get daily data
         df = pd.DataFrame(ohlcv, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='ms')  # Convert timestamp to datetime
         data[symbol] = df['Close']
@@ -113,4 +115,4 @@ def create_dataframe(exchanges: List, symbols: List):
     return all_dataframes
 
 
-print(get_highest_volume_symbols('coinbasepro', 25))
+create_correlation_heatmap('kucoin')

@@ -26,7 +26,7 @@ class CCXTInterface:
                     'apiKey': self.config[exchange_id]['KEY'],
                     'secret': self.config[exchange_id]['SECRET'],
                     'password': self.config[exchange_id]['PASS']
-                })
+                } if exchange_id == 'kucoinfutures' else {})
 
                 await exchange_class.load_markets()
                 if exchange_class.has['watchTrades'] and exchange_class.has['fetchOHLCV']:

@@ -35,23 +35,17 @@ class Trades(CCXTInterface):
                         await self.trade_queue.put((exchange_id, trades))
             except (Exception, KeyboardInterrupt) as e:
                 logging.warning(f"Error watching trades on {exchange_id}: {e}")
-            # finally:
-            #     try:
-            #         await exchange.close()
-            #         logging.info(f"{exchange_id} closed successfully.")
-            #     except Exception as e:
-            #         logging.info(f"Error closing {exchange_id}: {e}")
 
         async def process_trades():
             while True:
                 exchange_id, trades = await self.trade_queue.get()
-
-                for trade in trades:
-                    self.agg.calculate_stats(exchange_id, trade)
-                    self.agg.report_statistics()
-                # await self.agg.aggregate_trades(exchange_id, trades) # this is the call to the aggregator which is called every trade
+                # for trade in trades:
+                #     self.agg.calculate_stats(exchange_id, trade)
+                #     self.agg.report_statistics()
+                await self.agg.aggregate_trades(exchange_id, trades) # this is the call to the aggregator which is called every trade
                 
                 self.trade_queue.task_done()
+                
 
         watch_tasks = [watch_trades_(exchange_id, symbols) for exchange_id in self.exchanges.keys()]
         worker_tasks = [process_trades() for _ in range(len(self.exchanges))]

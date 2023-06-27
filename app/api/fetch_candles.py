@@ -3,11 +3,15 @@ from typing import Dict, List, Optional, Tuple
 import ccxt
 import logging
 import pandas as pd
+
+from analysis.technical_analysis import TA
 from .ccxt_interface import CCXTInterface
 
 class Candles(CCXTInterface):
     def __init__(self, local_database):
         super().__init__(local_database)
+        
+        self.ta = TA()
         
         
     #########################################################################################################
@@ -85,10 +89,16 @@ class Candles(CCXTInterface):
             logging.error(f"Error fetching data from {exchange_id} for {symbol}: {str(e)}")
             return (exchange_id, symbol, timeframe, pd.DataFrame())
 
+        # This is the entire data set of candles. The loaded (if any, and the freshly fetched 'new_candles' list)
         concatted_candles = self.concat_candles(cached_candles, new_candles)
+        
+        # Calculate a bunch of techincal indicators
+        concatted_candles = self.ta.calculate_indicators(concatted_candles)
 
-        # Write the unsaved candles DataFrame to InfluxDB
+        # Turn the new candles into a dataframe
         new_candles_ = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])
+        
+        # Write the unsaved candles DataFrame to InfluxDB
         self.influx.write_candles_to_influxdb(exchange_id, symbol, timeframe, new_candles_)
 
         if resample_timeframe:

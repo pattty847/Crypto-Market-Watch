@@ -19,47 +19,49 @@ class MarketAggregator:
         self.data = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
         self.order_size_categories = ['0-10k', '10k-100k', '100k-1m', '1m-10m', '10m-100m']
         self.combined_trades = {}
-        self.prev_taker_id = None
-        self.prev_timestamp = None
+        self.aggregated_trades = {}
+        self.last_taker_order_id = None
         self.timeframes = ["1m", "5m", "15m", "1h", "4h", "1d"]
             
-    async def aggregate_trades(self, exchange_id: str, trades_data: List[dict]):
-        # Use Pydantic to parse trades data into a list of Trade objects
-        trades = parse_obj_as(List[Trade], trades_data)
-        
-        print(trades)
-
+    async def aggregate_trades(self, exchange_id, trades):
         for trade in trades:
-            taker_id = trade.info.taker_order_id
-            timestamp = trade.timestamp
+            trade_info = trade['info']
+            taker_order_id = trade_info['takerOrderId']
+            if taker_order_id not in self.aggregated_trades:
+                if self.last_taker_order_id is not None:
+                    await self.emit_trade(self.last_taker_order_id)
+                self.last_taker_order_id = taker_order_id
+                self.aggregated_trades[taker_order_id] = {
+                    'exchange_id': exchange_id,
+                    'takerOrderId': taker_order_id,
+                    'symbol': trade['symbol'],
+                    'side': trade_info['side'],
+                    'datetime': trade['datetime'],
+                    'quantity': 0,
+                    'total_value': 0,
+                    'total_cost': 0
+                }
+            self.aggregated_trades[taker_order_id]['quantity'] += trade_info['size']
+            self.aggregated_trades[taker_order_id]['total_value'] += trade_info['size'] * trade_info['price']
+            self.aggregated_trades[taker_order_id]['total_cost'] += trade_info['size'] * trade_info['price'] * 0.1
 
-            # If the taker_id or timestamp has changed, emit the previous combined trade
-            if self.prev_taker_id is not None and (taker_id != self.prev_taker_id or timestamp != self.prev_timestamp):
-                self.emit_combined_trade(exchange_id, self.prev_taker_id)
-                # Reset the combined trade dictionary for the new taker_id
-                self.combined_trades = {}
+    async def emit_trade(self, taker_order_id):
+        agg_trade = self.aggregated_trades[taker_order_id]
+        agg_trade['price'] = agg_trade['total_value'] / agg_trade['quantity'] if agg_trade['quantity'] > 0 else 0
+        agg_trade['cost'] = agg_trade['total_cost'] / (agg_trade['quantity'] * 0.1) if agg_trade['quantity'] > 0 else 0
+        del agg_trade['total_value']
+        del agg_trade['total_cost']
+        print(f"Emitting aggregated trade: {agg_trade}")  # Replace with your emitting code
+        del self.aggregated_trades[taker_order_id]
 
-            # Add the new trade to the combined trades
-            if taker_id in self.combined_trades:
-                self.combined_trades[taker_id]['total_amount'] += trade.amount
-                self.combined_trades[taker_id]['total_price'] += trade.price * trade.amount
-            else:
-                self.combined_trades[taker_id] = {'total_amount': trade.amount, 'total_price': trade.price * trade.amount}
 
-            self.prev_taker_id = taker_id
-            self.prev_timestamp = timestamp
+    def calculate_stats(self, exchange_id, trade):
+        # Calculate stats here
+        pass
 
-        # Emit the last combined trade
-        if self.prev_taker_id is not None:
-            self.emit_combined_trade(exchange_id, self.prev_taker_id)
-
-    def emit_combined_trade(self, exchange_id, taker_id):
-        # Emit the combined trade
-        total_amount = self.combined_trades[taker_id]['total_amount']
-        total_price = self.combined_trades[taker_id]['total_price']
-        average_price = total_price / total_amount
-        print(f'Exchange ID: {exchange_id}, Taker ID: {taker_id}, Total amount: {total_amount}, Average price: {average_price}')
-                    
+    def report_statistics(self):
+        # Report stats here
+        pass          
     
     def calculate_stats(self, exchange: str, trades: List[str], write_to_db=False) -> None:
 

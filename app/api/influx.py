@@ -72,8 +72,9 @@ class InfluxDB:
         |> drop(columns: ["_start", "_stop"])
         """
 
-        logging.info(f"Fetching from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
+        logging.info(f"Fetching candles from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
         result = self.query_api.query_data_frame(query, 'pepe')
+        logging.info(f'Found {len(result)} candles.')
 
         if result.empty:
             return pd.DataFrame(columns=["dates", "opens", "highs", "lows", "closes", "volumes"])
