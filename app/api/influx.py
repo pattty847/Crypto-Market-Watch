@@ -62,7 +62,7 @@ class InfluxDB:
         
         query = f"""
         from(bucket: "{bucket}")
-        |> range(start: -30d)
+        |> range(start: -1000d)
         |> filter(fn: (r) => r["_measurement"] == "candle")
         |> filter(fn: (r) => r["exchange"] == "{exchange}")
         |> filter(fn: (r) => r["symbol"] == "{symbol}")
@@ -72,9 +72,8 @@ class InfluxDB:
         |> drop(columns: ["_start", "_stop"])
         """
 
-        logging.info(f"Fetching candles from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
         result = self.query_api.query_data_frame(query, 'pepe')
-        logging.info(f'Found {len(result)} candles.')
+        logging.info(f"Found {len(result)} candles from bucket: {bucket}, organization: 'pepe', {exchange}, {symbol}, {timeframe}:")
 
         if result.empty:
             return pd.DataFrame(columns=["dates", "opens", "highs", "lows", "closes", "volumes"])

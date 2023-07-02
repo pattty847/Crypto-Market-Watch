@@ -35,7 +35,7 @@ class Trading:
             
     def run_test(self, dataframe: pd.DataFrame):
         # The algorithms require a vectorized environment to run
-        env = DummyVecEnv([lambda: StockTradingEnv(dataframe)])
+        env = DummyVecEnv([lambda: TradingEnvironment(dataframe)])
 
         model = PPO('MlpPolicy', env, verbose=1)
         model.learn(total_timesteps=20000)

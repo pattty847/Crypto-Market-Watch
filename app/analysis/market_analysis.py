@@ -1,6 +1,7 @@
 import logging
 from typing import List
 import ccxt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -50,7 +51,7 @@ def create_correlation_heatmap(exchange_id: str):
     plt.show()
 
 
-def create_dataframe(exchanges: List, symbols: List):
+def create_dataframe(exchanges: List, symbols: List, timeframe: str):
     all_dataframes = {}
     for exchange_id in exchanges:
         for symbol in symbols:
@@ -62,17 +63,36 @@ def create_dataframe(exchanges: List, symbols: List):
             quote_volume_title = f'Quote Volume {quote}'
 
             # Fetch daily OHLCV data. 1D denotes 1 day. You can adjust this as needed.
-            data = exchange.fetch_ohlcv(symbol, '1d')
+            data = exchange.fetch_ohlcv(symbol, timeframe)
 
             df = pd.DataFrame(data, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', base_volume_title])
             df['Timestamp'] = pd.to_datetime(df['Timestamp'], unit='ms') # Convert timestamp to datetime.
 
             # Quote volume
             df[quote_volume_title] = (df[base_volume_title] * df['Close']).apply(lambda x: '{:,.2f}'.format(x))
+            
+            df = ITrend(df)
+            
+            # Compute log returns
+            df['LOG_RETURN'] = np.log(df['Close'] / df['Close'].shift(1))
+            df.insert(df.columns.get_loc('Close')+1, 'LOG_RETURNS', df['LOG_RETURN'])
+            
+            df['CUM_LOG_RETURN'] = df['LOG_RETURN'].cumsum()
+            df.insert(df.columns.get_loc('LOG_RETURNS')+1, 'CUM_LOG_RETURNS', df['CUM_LOG_RETURN'])
 
-            pct_change_series = df['Close'].pct_change() * 100
-            close_idx = df.columns.get_loc('Close')
-            df.insert(close_idx+1, 'CLOSE_PCT_CHANGE', pct_change_series)
+            pct_return = df['Close'].pct_change() * 100
+            df.insert(df.columns.get_loc('Close')+1, 'PCT_RETURN', pct_return)
+            
+            df['HULL-55'] = hull_moving_average(df, 55, insert_next_to='CUM_LOG_RETURN')
+            df['HULL-180'] = hull_moving_average(df, 180, insert_next_to='HULL_55')
+            
+            df.insert(df.columns.get_loc('CUM_LOG_RETURN')+1, 'HULL_55', df['HULL-55'])
+            df.insert(df.columns.get_loc('HULL_55')+1, 'HULL_180', df['HULL-180'])
+            
+            df.insert(df.columns.get_loc('HULL_180')+1, 'HULL_55_TREND', np.where(df['HULL_55'] >= df['HULL_55'].shift(1), 'Bull', 'Bear'))
+            df.insert(df.columns.get_loc('HULL_55_TREND')+1, 'HULL_180_TREND', np.where(df['HULL_180'] >= df['HULL_180'].shift(1), 'Bull', 'Bear'))
+            
+            df.drop(columns=['LOG_RETURN', 'CUM_LOG_RETURN', 'HULL-55', 'HULL-180'], inplace=True)
 
             # Calculate the moving averages.
             df['SMA_20'] = df['Close'].rolling(window=20).mean() # 20-day SMA
@@ -90,7 +110,6 @@ def create_dataframe(exchanges: List, symbols: List):
             df['SMA_Trend_Strength'] = abs(df['SMA_20'] - df['SMA_50'])
             df['SMA_Trend_Strength'] = pd.cut(df['SMA_Trend_Strength'], bins=5, labels=['Neutral', 'Weak', 'Moderate', 'Strong', 'Very Strong'])
 
-
             # Calculate the moving averages.
             df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
             df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
@@ -106,13 +125,72 @@ def create_dataframe(exchanges: List, symbols: List):
 
             df['EMA_Trend_Strength'] = abs(df['EMA_20'] - df['EMA_50'])
             df['EMA_Trend_Strength'] = pd.cut(df['EMA_Trend_Strength'], bins=5, labels=['Neutral', 'Weak', 'Moderate', 'Strong', 'Very Strong'])
+            
+            df.dropna(inplace=True)
 
-            symbol = symbol.replace('/', '-')
-            df.to_csv(f'{exchange_id}:{symbol}.csv')
+            save_symbol = symbol.replace('/', '-')
+            df.to_csv(f'{exchange_id} - {save_symbol} - {timeframe}.csv')
 
             all_dataframes[(exchange_id, symbol)] = df
 
     return all_dataframes
 
+def ITrend(data, window=10):
+    price = data['Close']
+    value1 = pd.Series(np.zeros(len(price)), index=price.index)
+    value2 = pd.Series(np.zeros(len(price)), index=price.index)
+    trendline = pd.Series(np.zeros(len(price)), index=price.index)
+    smooth_price = pd.Series(np.zeros(len(price)), index=price.index)
 
-create_correlation_heatmap('kucoin')
+    for i in range(3, len(price)):
+        value1[i] = 0.0542 * price[i] + 0.021 * price[i - 1] + 0.021 * price[i - 2] + 0.0542 * price[i - 3] + \
+                    1.9733 * value1[i - 1] - 1.6067 * value1[i - 2] + 0.4831 * value1[i - 3]
+        
+        value2[i] = 0.8 * (value1[i] - 2 * np.cos(np.deg2rad(360 / window)) * value1[i - 1] + value1[i - 2]) + \
+                    1.6 * np.cos(np.deg2rad(360 / window)) * value2[i - 1] - 0.6 * value2[i - 2]
+        
+        trendline[i] = 0.9 * (value2[i] - 2 * np.cos(np.deg2rad(360 / window)) * value2[i - 1] + value2[i - 2]) + \
+                       1.8 * np.cos(np.deg2rad(360 / window)) * trendline[i - 1] - 0.8 * trendline[i - 2]
+        
+        smooth_price[i] = (4 * price[i] + 3 * price[i - 1] + 2 * price[i - 2] + price[i - 3]) / 10
+
+    data['Trendline'] = trendline
+    data['SmoothPrice'] = smooth_price
+    return data
+
+# Let's define a helper function to calculate WMA
+def weighted_moving_average(data, period, column='Close'):
+    weights = np.arange(1, period + 1)
+    return data[column].rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+def hull_moving_average(data, period, insert_next_to, column='Close'):
+    # Calculate the square root of the period
+    sqrt_period = int(np.sqrt(period))
+    
+    # Calculate the WMA for period n/2
+    half_period_wma = weighted_moving_average(data, int(period/2), column=column)
+    
+    # Calculate the WMA for full period
+    full_period_wma = weighted_moving_average(data, period, column=column)
+    
+    # Subtract half period WMA from full period WMA
+    diff_wma = 2 * half_period_wma - full_period_wma
+    
+    # Create a DataFrame from diff_wma
+    diff_wma_df = diff_wma.to_frame()
+    
+    # Use the column name of the diff_wma_df DataFrame for calculating the HMA
+    hma = weighted_moving_average(diff_wma_df, sqrt_period, column=diff_wma_df.columns[0])
+    
+    return hma
+
+df = create_dataframe(['coinbasepro'], ['BTC/USD'], '1h')
+
+plt.figure(figsize=(10, 6))
+
+plt.plot(df[('coinbasepro', 'BTC/USD')]['Close'], label='Close')
+plt.plot(df[('coinbasepro', 'BTC/USD')]['Trendline'], label='Trendline')
+plt.plot(df[('coinbasepro', 'BTC/USD')]['SmoothPrice'], label='SmoothPrice')
+
+plt.legend()  # Add legend
+plt.show()

@@ -10,21 +10,24 @@ from ai.trading import Trading
 logging.basicConfig(level=logging.INFO)
 
 async def main():
-    async with Trades(local_database=True) as manager:
-        await manager.load_exchanges(['kucoinfutures'])
+    async with Candles(local_database=True) as manager:
+        await manager.load_exchanges(['coinbasepro'])
         
-        await manager.watch_trades(['BTC/USDT:USDT'])
+        # await manager.watch_trades(['BTC/USDT:USDT'])
         
-        # candles = await manager.fetch_candles([{"exchange":"kucoinfutures", "symbol":"BTC/USDT:USDT", "timeframe":"1h"}], None, 1000)
+        candles = await manager.fetch_candles([{"exchange":"coinbasepro", "symbol":"BTC/USD", "timeframe": "1d"}], '2016-01-01T00:00:00.000Z', 1000)
         
-        # for exchange_id, symbol, timeframe, dataframe in candles:
-        #     print(f"Exchange ID: {exchange_id}, Symbol: {symbol}, Timeframe: {timeframe}")
-        #     dataframe = dataframe.dropna()
+        for exchange_id, symbol, timeframe, dataframe in candles:
+            df = dataframe.dropna()
             
-        #     print(dataframe.head(10))
+            # scaler = StandardScaler()
             
-        #     trading = Trading()
-        #     trading.run(dataframe)
+            # cols = df.columns[1:]
+
+            # df.loc[:, cols] = scaler.fit_transform(df[cols])
+            
+            print(f"Exchange ID: {exchange_id}, Symbol: {symbol}, Timeframe: {timeframe}")
+            print(df)
 
 if __name__ == "__main__":
     asyncio.run(main())

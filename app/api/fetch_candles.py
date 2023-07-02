@@ -93,7 +93,7 @@ class Candles(CCXTInterface):
         concatted_candles = self.concat_candles(cached_candles, new_candles)
         
         # Calculate a bunch of techincal indicators
-        concatted_candles = self.ta.calculate_indicators(concatted_candles)
+        concatted_candles = self.ta.calculate_indicators(exchange_id, symbol, timeframe, concatted_candles, csv=True)
 
         # Turn the new candles into a dataframe
         new_candles_ = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])
@@ -170,16 +170,7 @@ class Candles(CCXTInterface):
         
         new_candles_df = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])
         new_candles_df['dates'] = pd.to_datetime(new_candles_df['dates'], unit='ms', utc=True)
-        loaded_candles = pd.concat([loaded_candles, new_candles_df], ignore_index=True)
-        # loaded_candles = loaded_candles.groupby('dates').agg({
-        #     'opens': 'first',
-        #     'highs': 'max',
-        #     'lows': 'min',
-        #     'closes': 'last',
-        #     'volumes': 'sum'
-        # }).reset_index()
-
-        return loaded_candles
+        return pd.concat([loaded_candles, new_candles_df], ignore_index=True)
     
     def find_highest_resample_timeframe(self, resample_timeframe, available_timeframes):
         available_timeframes_minutes = [self.convert_to_minutes(tf) for tf in available_timeframes]

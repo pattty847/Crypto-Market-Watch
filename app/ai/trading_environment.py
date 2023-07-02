@@ -1,58 +1,50 @@
+import numpy as np
+import pandas as pd
 import gym
 from gym import spaces
-import numpy as np
 
 class TradingEnvironment(gym.Env):
-    def __init__(self, dataframe):
+    def __init__(self, dataframe, rows_of_memory=5):
         super(TradingEnvironment, self).__init__()
 
-        self.dataframe = dataframe
-        self.reward_range = (-np.inf, np.inf)
-        
-        # Actions: buy=0, sell=1, hold=2
-        self.action_space = spaces.Discrete(3)
-        
-        # multi-dimensional continuous space representing the price of the asset and indicators
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=[len(dataframe.columns) + 5,])
+        # Define action and observation space
+        # They must be gym.spaces objects
+        # (action, amount) - (0, 0.5) - buy 50% of the asset
+        self.action_space = spaces.Tuple((spaces.Discrete(4), spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)))  # Buy, sell, hold, increase/decrease position
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(rows_of_memory, len(dataframe[0].columns)), dtype=np.float32)  # number of rows for memory
 
-        # initial balance
-        self.asset_balance = 10000  
-        self.asset_held = 0
+        # Initialize state
+        self.dataframe = dataframe
+        self.rows_of_memory = rows_of_memory
+        self.initial_portfolio_value = 10000
         self.current_step = 0
+        self.current_portfolio_value = self.initial_portfolio_value
         
-        self.transaction_fee = 0.0075 # 0.1% fee per trade
+        self.reset()
 
     def step(self, action):
-        current_price = self.dataframe['closes'].iloc[self.current_step]
-        next_price = self.dataframe['closes'].iloc[self.current_step + 1]
-
-        if action == 0:  # Buy
-            buy_amount = self.asset_balance / current_price
-            self.asset_held += buy_amount * (1 - self.transaction_fee)
-            self.asset_balance = 0
-        elif action == 1:  # Sell
-            sell_amount = self.asset_held * current_price
-            self.asset_balance += sell_amount * (1 - self.transaction_fee)
-            self.asset_held = 0
-
+        # Execute one time step within the environment
         self.current_step += 1
-
-        reward = self.asset_balance + self.asset_held * next_price
-        if action == 2:
-            reward -= 0.01
         
-        done = self.current_step == len(self.dataframe) - 2
-        info = {}
+        
+        
+        done = self.current_step >= len(self.dataframe)
+        reward = self.get_reward()
+        
+        return self.get_state(), reward, done, {}
 
-        return next_price, reward, done, info
+    def get_state(self, t):
+        # Return the last window_size rows from the dataframes
+        return self.current_portfolio_value - self.initial_portfolio_value
+
+    def get_reward(self):
+        # Calculate the reward based on the current state and portfolio
+        pass
 
     def reset(self):
-        self.asset_balance = 10000
-        self.asset_held = 0
-        self.current_step = 0
+        # Reset the state of the environment to an initial state
+        pass
 
-        return self.get_state()
-    
-    def get_state(self):
-        start = max(0, self.current_step - 5)
-        return np.array(self.dataframe.iloc[start:self.current_step+1])
+    def render(self, mode='human'):
+        # Render the environment to the screen (optional)
+        pass
