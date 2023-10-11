@@ -1,6 +1,8 @@
 venv
-old_files
 config.json
+favorites.json
+.DS_Store
+.gitignore
 __pycache__
 api/__pycache__
 ui/__pycache__
