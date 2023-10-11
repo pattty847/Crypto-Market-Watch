@@ -9,7 +9,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3 import PPO
 
 
-class Trading:
+class TradingBot:
     def run(self, dataframe: pd.DataFrame):
         env = TradingEnvironment(dataframe)
         agent = QLearningAgent(env.action_space)

@@ -7,11 +7,11 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 import pandas as pd
 from pydantic import ValidationError
 from tabulate import tabulate
-from api.influx import InfluxDB
+from ..api.influx import InfluxDB
 from collections import defaultdict
 from typing import List
 from pydantic import parse_obj_as
-from api.trade_model import Trade
+from ..api.trade_model import Trade
 
 class MarketAggregator:
     

@@ -4,12 +4,12 @@ import ccxt
 import logging
 import pandas as pd
 
-from analysis.technical_analysis import TA
+from ..analysis.technical_analysis import TA
 from .ccxt_interface import CCXTInterface
 
 class Candles(CCXTInterface):
-    def __init__(self, local_database):
-        super().__init__(local_database)
+    def __init__(self, local_database, exchanges):
+        super().__init__(local_database, exchanges)
         
         self.ta = TA()
         
@@ -23,32 +23,74 @@ class Candles(CCXTInterface):
 
     async def fetch_candles(
         self,
-        charts: List[Dict[str, str]],
-        from_date: str,
-        limit: int,
+        charts: Optional[List[Dict[str, str]]] = None,
+        from_date: str = None,
+        limit: int = None,
+        exchange: Optional[str] = None,
+        timeframes: Optional[List[str]] = None,
         max_retries: int = 3,
         resample_timeframe: Optional[str] = None,
     ) -> List[Tuple[str, str, str, pd.DataFrame]]:
+        """
+        The fetch_candles function fetches candles for a list of charts or all symbols on an exchange.
+            Args:
+                charts (Optional[List[Dict[str, str]]]): A list of dictionaries containing the keys 'exchange', 'symbol' and
+                    'timeframe'. If provided, candles will be fetched for each chart in this list.
+                from_date (str): The date to fetch candles from. Defaults to None which means that all available data is returned.
+                    This argument can be either a string formatted as YYYY-MM-DD or an integer
+        
+        :param self: Access the class attributes
+        :param charts: Optional[List[Dict[str: Pass a list of dictionaries
+        :param str]]]: Define the type of data that is expected to be passed into the function
+        :param from_date: str: Specify the date from which to fetch candles
+        :param limit: int: Limit the number of candles returned
+        :param exchange: Optional[str]: Specify the exchange to fetch data from
+        :param timeframes: Optional[List[str]]: Specify the timeframes you want to fetch data for
+        :param max_retries: int: Set the number of times to retry if there is a connection error
+        :param resample_timeframe: Optional[str]: Resample the data to a different timeframe
+        :param : Specify the exchange and symbol to fetch candles for
+        :return: A list of tuples
+        :doc-author: Trelent
+        """
+        if charts is None and (exchange is None or timeframes is None):
+            raise ValueError('Either "charts" or both "exchange" and "timeframes" must be provided.')
+
         fetch_tasks = []
-        for chart in charts:
-            exchange_id = chart['exchange']
-            symbol = chart['symbol']
-            timeframe = chart['timeframe']
-            task = asyncio.create_task(
-                self._fetch_candles(
-                    exchange_id, symbol, timeframe, from_date, limit, max_retries, resample_timeframe)
-            )
-            fetch_tasks.append(task)
+
+        if charts:
+            print('Charts')
+            for chart in charts:
+                exchange_id = chart['exchange']
+                symbol = chart['symbol']
+                timeframe = chart['timeframe']
+                task = asyncio.create_task(
+                    self._fetch_candles(
+                        exchange_id, symbol, timeframe, from_date, limit, max_retries, resample_timeframe)
+                )
+                fetch_tasks.append(task)
+
+        if exchange and timeframes:
+            print('eexchange timeframes')
+            # Assume get_symbols is a method that retrieves all symbols for a given exchange
+            symbols = self.exchange_list[exchange]['symbols']
+            for symbol in symbols:
+                for timeframe in timeframes:
+                    task = asyncio.create_task(
+                        self._fetch_candles(
+                            exchange, symbol, timeframe, from_date, limit, max_retries, resample_timeframe)
+                    )
+                    fetch_tasks.append(task)
 
         return await asyncio.gather(*fetch_tasks)
+
 
         
     async def _fetch_candles(
         self, exchange_id, symbol, timeframe, from_date, limit, max_retries, resample_timeframe) -> Tuple[str, str, str, pd.DataFrame]:
         
-        exchange = self.exchanges[exchange_id]["ccxt"]
+        exchange = self.exchange_list[exchange_id]["ccxt"]
         
-        if symbol not in self.exchanges[exchange_id]["symbols"]:
+        if symbol not in self.exchange_list[exchange_id]["symbols"]:
             logging.error(f"Symbol {symbol} does not exist for exchange {exchange_id}. Skipping fetch.")
             return (exchange_id, symbol, timeframe, pd.DataFrame())
 
@@ -93,7 +135,7 @@ class Candles(CCXTInterface):
         concatted_candles = self.concat_candles(cached_candles, new_candles)
         
         # Calculate a bunch of techincal indicators
-        concatted_candles = self.ta.calculate_indicators(exchange_id, symbol, timeframe, concatted_candles, csv=True)
+        concatted_candles = self.ta.calculate_indicators(exchange_id, symbol, timeframe, concatted_candles, csv=False)
 
         # Turn the new candles into a dataframe
         new_candles_ = pd.DataFrame(new_candles, columns=['dates', 'opens', 'highs', 'lows', 'closes', 'volumes'])

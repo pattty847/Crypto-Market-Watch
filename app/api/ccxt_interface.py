@@ -7,20 +7,20 @@ import logging
 
 from .influx import InfluxDB
 
-
 class CCXTInterface:
     """
     This class manages connections to CCXT exchanges.
     """
-    def __init__(self, local_database):
-        self.exchanges = None
+    def __init__(self, local_database, exchanges):
+        self.exchanges = exchanges
+        self.exchange_list = None
         self.influx = InfluxDB(local_database)
         with open('config.json', 'r') as f:
             self.config = json.load(f)
 
-    async def load_exchanges(self, exchanges: List):
+    async def load_exchanges(self):
         supported_exchanges = {}
-        for exchange_id in exchanges:
+        for exchange_id in self.exchanges:
             try:
                 exchange_class = getattr(ccxtpro, exchange_id)({
                     'apiKey': self.config[exchange_id]['KEY'],
@@ -37,9 +37,10 @@ class CCXTInterface:
                     }
             except Exception as e:
                 logging.error(f"Error creating exchange object for {exchange_id}: {e}")
-        self.exchanges = supported_exchanges
+        self.exchange_list = supported_exchanges
 
     async def __aenter__(self):
+        await self.load_exchanges()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -47,12 +48,12 @@ class CCXTInterface:
 
     async def close_all_exchanges(self):
         async def close_exchange(exchange_id):
-            exchange = self.exchanges[exchange_id]["ccxt"]
+            exchange = self.exchange_list[exchange_id]["ccxt"]
             try:
                 await exchange.close()
                 logging.info(f"{exchange_id} closed successfully.")
             except Exception as e:
                 logging.error(f"Error closing {exchange_id}: {e}")
 
-        tasks = [close_exchange(exchange_id) for exchange_id in self.exchanges.keys()]
+        tasks = [close_exchange(exchange_id) for exchange_id in self.exchange_list.keys()]
         await asyncio.gather(*tasks)

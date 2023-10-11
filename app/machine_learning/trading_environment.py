@@ -10,8 +10,10 @@ class TradingEnvironment(gym.Env):
         # Define action and observation space
         # They must be gym.spaces objects
         # (action, amount) - (0, 0.5) - buy 50% of the asset
-        self.action_space = spaces.Tuple((spaces.Discrete(4), spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)))  # Buy, sell, hold, increase/decrease position
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(rows_of_memory, len(dataframe[0].columns)), dtype=np.float32)  # number of rows for memory
+        self.action_space = spaces.Tuple((spaces.Discrete(4), spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32))) 
+        
+        
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(rows_of_memory, len(dataframe[0].columns)), dtype=np.float32) 
 
         # Initialize state
         self.dataframe = dataframe
@@ -25,9 +27,7 @@ class TradingEnvironment(gym.Env):
     def step(self, action):
         # Execute one time step within the environment
         self.current_step += 1
-        
-        
-        
+
         done = self.current_step >= len(self.dataframe)
         reward = self.get_reward()
         

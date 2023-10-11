@@ -4,13 +4,13 @@ import threading
 
 from asyncio import Queue
 from typing import Dict, List, Optional, Tuple
-from analysis.market_aggregator import MarketAggregator
+from ..analysis.market_aggregator import MarketAggregator
 from .ccxt_interface import CCXTInterface
 
 
 class Trades(CCXTInterface):
-    def __init__(self, local_database):
-        super().__init__(local_database)
+    def __init__(self, local_database, exchanges):
+        super().__init__(local_database, exchanges)
         self.agg = MarketAggregator()
         self.trade_queue = Queue()
         self.thread = threading.Thread()
@@ -21,7 +21,7 @@ class Trades(CCXTInterface):
 
     async def watch_trades(self, symbols: List[str]):
         async def watch_trades_(exchange_id, symbols):
-            exchange = self.exchanges[exchange_id]["ccxt"]
+            exchange = self.exchange_list[exchange_id]["ccxt"]
             try:
                 while True:
                     for symbol in symbols:
@@ -39,16 +39,17 @@ class Trades(CCXTInterface):
         async def process_trades():
             while True:
                 exchange_id, trades = await self.trade_queue.get()
-                # for trade in trades:
-                #     self.agg.calculate_stats(exchange_id, trade)
-                #     self.agg.report_statistics()
-                await self.agg.aggregate_trades(exchange_id, trades) # this is the call to the aggregator which is called every trade
+                for trade in trades:
+                    self.agg.calculate_stats(exchange_id, trade)
+                    self.agg.report_statistics()
+                
+                # await self.agg.aggregate_trades(exchange_id, trades)
                 
                 self.trade_queue.task_done()
                 
 
-        watch_tasks = [watch_trades_(exchange_id, symbols) for exchange_id in self.exchanges.keys()]
-        worker_tasks = [process_trades() for _ in range(len(self.exchanges))]
+        watch_tasks = [watch_trades_(exchange_id, symbols) for exchange_id in self.exchange_list.keys()]
+        worker_tasks = [process_trades() for _ in range(len(self.exchange_list))]
         all_tasks = watch_tasks + worker_tasks
 
         try:
